@@ -78,8 +78,7 @@ jobs:
           args: '-no-fail -fmt=sarif -out=gosec.sarif ./...'
         continue-on-error: true
 
-      - name: Secured Logging Invariant Audit
-        name: Verify No Sensitive Data Leaks in Logs
+      - name: Secured Logging Invariant Audit (Verify No Sensitive Data Leaks in Logs)
         run: |
           echo "Auditing codebase for secured logging invariants..."
           # Detect forbidden logging patterns: raw prompt templates, raw context payloads, authorization tokens, passwords
