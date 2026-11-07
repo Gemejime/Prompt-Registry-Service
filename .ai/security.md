@@ -3,7 +3,7 @@
 ## Threat Model & Trust Boundaries
 
 - **Untrusted Template Payloads**: Prompt templates submitted via administrative APIs may contain prompt injection markers, unescaped dialect tags, or malformed JSON schema drafts. All inputs must be structurally parsed and sanitized before storage.
-- **Unauthorized Tag Promotion**: Modifying `@production` or `@canary` tags changes live behavior across all calling orchestrators. Strict authorization (`prompt:promote`) and tenant scoping must be verified before executing tag mutations.
+- **Unauthorized Tag Promotion**: Modifying `@production` or `@canary` tags changes live behavior across all calling orchestrators. Strict authorization (`tag:promote`) and tenant scoping must be verified before executing tag mutations.
 - **Context Injection Boundary**: Runtime context payloads bound by `pkg/promptsdk` are untrusted user/document data. Dialect adapters (Anthropic XML, Llama-3 special headers) must sanitize and escape boundary markers to prevent delimiter-escape attacks.
 - **Database & Cache Security**: PostgreSQL 16+ connections and Redis 7.2 Cluster communication must use TLS/mTLS with strict password authentication within private VPC networks.
 - **Container Hardening**: Deployments use Google Container Distroless (`gcr.io/distroless/static-debian12:nonroot`) with UID 65532 (`runAsNonRoot: true`), read-only root filesystem (`readOnlyRootFilesystem: true`), and dropped Linux capabilities (`drop: ["ALL"]`).

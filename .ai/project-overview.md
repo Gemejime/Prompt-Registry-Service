@@ -43,7 +43,7 @@ CONTROL PLANE (rag-prompt-registry-service)               DATA PLANE (In-Process
 2. **Decoupled Control vs. Data Plane (ADR-001)**: Centralize administrative lifecycle governance (versioning, RBAC, schema registry) within `rag-prompt-registry-service`, while delegating runtime variable binding to an embedded Go SDK (`go-prompt-sdk`).
 3. **Zero-Serialization In-Process Compilation**: Eliminate network hops for large context payloads (50 KB parent containers) by rendering strings in-process within calling orchestrators via pooled buffers (`sync.Pool`).
 4. **Deterministic Multi-Dialect Adaptation**: Translate structured AST prompts into vendor-specific chat markup (Anthropic XML, Meta Llama-3 special headers, OpenAI JSON schema mode) directly in the client runtime.
-5. **Strict Output Contracts**: Bind every prompt version to a registered JSON schema to govern downstream structured inference generation.
+5. **Strict Output Contracts**: Bind every prompt version to a registered JSON schema (`schema_id` is required in `CreateTemplateRequest` and `PublishVersionRequest` across both REST and gRPC and must resolve to a registered schema) to govern downstream structured inference generation.
 6. **Instant Multi-Instance Cache Coherence (ADR-002)**: Broadcast tag pointer mutations (`@production`) over Redis Pub/Sub (`channel:prompt:invalidation`) to invalidate all distributed in-memory SDK caches within $<100$ms.
 7. **Continuous Documentation & Contract Synchronization**: Ensure internal OpenAPI 3.1 specifications (`openapi/openapi.yaml`, `/docs`, `/api/docs`) and `.ai/doc-api.md` are continuously synchronized with every code change.
 

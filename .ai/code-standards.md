@@ -29,7 +29,7 @@
 ## Storage & Connectivity Invariants
 
 1. **PgBouncer Simple Protocol Compatibility (ADR-003)**:
-   - When configuring `jackc/pgx/v5` connection pools in `internal/infrastructure/persistence/postgres/pool.go`, explicitly configure `PreferSimpleProtocol = true` (or `pgx.QueryExecModeSimpleProtocol`).
+   - When configuring `jackc/pgx/v5` connection pools in `internal/infrastructure/persistence/postgres/pool.go`, explicitly configure `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol`.
    - Prepared statements must be disabled across PgBouncer transaction pooling mode to prevent "prepared statement does not exist" failures during high connection turnover.
 2. **Transactional Compliance Ledger (ADR-004)**:
    - Every mutation to `prompt_versions` or `prompt_tags` must atomically insert a corresponding audit record into `prompt_audit_ledger` inside the exact same database transaction (`tx.Commit()`).

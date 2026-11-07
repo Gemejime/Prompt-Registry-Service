@@ -31,13 +31,13 @@ The control plane process (`rag-prompt-registry-service`) runs an internal HTTP 
 
 | Endpoint | Method | Request Payload | Response Codes | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `/v1/templates` | `POST` | `CreateTemplateRequest` | `201 Created`, `400 Bad Request`, `409 Conflict` | Initialize template aggregate root and publish initial version $v_1$ |
+| `/v1/templates` | `POST` | `CreateTemplateRequest` | `201 Created`, `400 Bad Request`, `404 Not Found`, `409 Conflict` | Initialize template aggregate root and publish initial version $v_1$ |
 | `/v1/templates` | `GET` | Cursor query parameters (`limit`, `cursor`) | `200 OK` | Paginated listing of registered prompt templates |
 | `/v1/templates/{id}/versions` | `POST` | `PublishVersionRequest` | `201 Created`, `400 Bad Request`, `404 Not Found` | Create next immutable version $v_{n+1}$ with AST and schema contract |
 | `/v1/templates/{id}/versions/{version}` | `GET` | None | `200 OK`, `404 Not Found` | Retrieve immutable canonical AST representation |
-| `/v1/templates/{id}/tags/{tag}` | `PUT` | `PromoteTagRequest` | `200 OK`, `400 Bad Request`, `404 Not Found` | Atomically mutate semantic tag pointer (`@production`) & emit Redis Pub/Sub |
+| `/v1/templates/{id}/tags/{tag}` | `PUT` | `PromoteTagRequest` | `200 OK`, `400 Bad Request`, `404 Not Found`, `409 Conflict` | Atomically mutate semantic tag pointer (`@production`) & emit Redis Pub/Sub |
 | `/v1/templates/{id}/tags/{tag}` | `GET` | None | `200 OK`, `404 Not Found` | Resolve current target version and AST assigned to a tag pointer |
-| `/v1/schemas` | `POST` | `RegisterSchemaRequest` | `201 Created`, `400 Bad Request`, `409 Conflict` | Register or update JSON output validation schema contract |
+| `/v1/schemas` | `POST` | `RegisterSchemaRequest` | `201 Created`, `400 Bad Request`, `409 Conflict` | Register a new JSON output validation schema contract |
 | `/v1/schemas` | `GET` | Cursor query parameters (`limit`, `cursor`) | `200 OK` | Paginated listing of registered JSON output schemas |
 | `/v1/schemas/{id}` | `GET` | None | `200 OK`, `404 Not Found` | Fetch registered JSON output schema definition |
 
@@ -54,11 +54,14 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local Control Plane Administration Server
+security:
+  - bearerAuth: []
 paths:
   /healthz:
     get:
       summary: Liveness Probe
       operationId: getLiveness
+      security: []
       responses:
         '200':
           description: Server process is responsive
@@ -75,6 +78,7 @@ paths:
     get:
       summary: Readiness Probe
       operationId: getReadiness
+      security: []
       responses:
         '200':
           description: Server is ready to handle traffic
@@ -103,6 +107,7 @@ paths:
     get:
       summary: Prometheus Metrics
       operationId: getMetrics
+      security: []
       responses:
         '200':
           description: Prometheus exposition metrics
@@ -114,6 +119,7 @@ paths:
     get:
       summary: OpenAPI 3.1 Specification in YAML
       operationId: getOpenAPISpec
+      security: []
       responses:
         '200':
           description: Raw OpenAPI YAML file
@@ -125,6 +131,7 @@ paths:
     get:
       summary: Alias for OpenAPI 3.1 Specification
       operationId: getAPIDocs
+      security: []
       responses:
         '200':
           description: OpenAPI Specification
@@ -153,6 +160,12 @@ paths:
                 $ref: '#/components/schemas/TemplateResponse'
         '400':
           description: Invalid input payload or AST schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Referenced output schema not found
           content:
             application/json:
               schema:
@@ -189,7 +202,7 @@ paths:
   /v1/templates/{id}/versions:
     post:
       summary: Publish Immutable Version
-      description: Create next immutable version v_{n+1} with AST and optional JSON schema contract.
+      description: Create next immutable version v_{n+1} with AST and registered JSON schema contract.
       operationId: publishVersion
       parameters:
         - name: id
@@ -218,7 +231,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Template not found
+          description: Template or referenced output schema not found
           content:
             application/json:
               schema:
@@ -296,6 +309,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Template or target version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Tag pointer version conflict (current pointer version does not match expected_version)
           content:
             application/json:
               schema:
@@ -413,10 +432,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Bearer JWT token with tenant_id and administrative role claims (prompt:write, prompt:publish, tag:promote).
   schemas:
     CreateTemplateRequest:
       type: object
-      required: [tenant_id, name, raw_ast, author]
+      required: [tenant_id, name, raw_ast, schema_id, author]
       properties:
         tenant_id:
           type: string
@@ -433,30 +458,37 @@ components:
         schema_id:
           type: string
           format: uuid
+          description: Registered JSON schema UUID governing structured output contract (must resolve to an existing schema)
         author:
           type: string
           example: "system-admin"
 
     PublishVersionRequest:
       type: object
-      required: [raw_ast, author]
+      required: [raw_ast, schema_id, author]
       properties:
         raw_ast:
           $ref: '#/components/schemas/TemplateAST'
         schema_id:
           type: string
           format: uuid
+          description: Registered JSON schema UUID governing structured output contract (must resolve to an existing schema)
         author:
           type: string
           example: "system-admin"
 
     PromoteTagRequest:
       type: object
-      required: [target_version, updated_by]
+      required: [target_version, expected_version, updated_by]
       properties:
         target_version:
           type: integer
           example: 2
+        expected_version:
+          type: integer
+          minimum: 0
+          description: Expected current version of the tag pointer for atomic optimistic locking (0 if the tag is not yet assigned)
+          example: 1
         updated_by:
           type: string
           example: "deploy-pipeline"
@@ -535,7 +567,7 @@ components:
 
     VersionDetailResponse:
       type: object
-      required: [template_id, version, ast, author, created_at]
+      required: [template_id, version, ast, schema_id, author, created_at]
       properties:
         template_id:
           type: string
@@ -561,6 +593,7 @@ components:
       properties:
         templates:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/TemplateResponse'
         next_cursor:
@@ -646,6 +679,7 @@ components:
       properties:
         schemas:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/SchemaResponse'
         next_cursor:
@@ -695,7 +729,8 @@ message CreateTemplateRequest {
   string tenant_id = 1;
   string name = 2;
   TemplateAST raw_ast = 3;
-  string author = 4;
+  string schema_id = 4; // Required: must resolve to a registered JSON schema
+  string author = 5;
 }
 
 message CreateTemplateResponse {
@@ -706,7 +741,7 @@ message CreateTemplateResponse {
 message PublishVersionRequest {
   string template_id = 1;
   TemplateAST raw_ast = 2;
-  string schema_id = 3;
+  string schema_id = 3; // Required: must resolve to a registered JSON schema
   string author = 4;
 }
 
@@ -721,6 +756,7 @@ message PromoteTagRequest {
   string tag = 2; // e.g. "@production", "@staging", "@canary"
   uint32 target_version = 3;
   string updated_by = 4;
+  uint32 expected_version = 5; // Required optimistic lock precondition (0 if unassigned); returns ABORTED on mismatch
 }
 
 message PromoteTagResponse {
@@ -808,8 +844,6 @@ message MessageBlock {
 ## 5. Relational Persistence Schema (PostgreSQL 16+)
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
 -- Aggregates root
 CREATE TABLE prompt_templates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -821,13 +855,23 @@ CREATE TABLE prompt_templates (
     CONSTRAINT uq_tenant_template_name UNIQUE (tenant_id, name)
 );
 
+-- Registered JSON schemas
+CREATE TABLE json_schemas (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    schema_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tenant_schema UNIQUE (tenant_id, name)
+);
+
 -- Append-only immutable versions
 CREATE TABLE prompt_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     template_id UUID NOT NULL REFERENCES prompt_templates(id) ON DELETE RESTRICT,
     version INT NOT NULL,
     raw_ast JSONB NOT NULL,
-    schema_id UUID,
+    schema_id UUID NOT NULL REFERENCES json_schemas(id) ON DELETE RESTRICT,
     author VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_template_version UNIQUE (template_id, version)
@@ -856,16 +900,6 @@ CREATE TABLE prompt_audit_ledger (
     performed_by VARCHAR(255) NOT NULL,
     payload_snapshot JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Registered JSON schemas
-CREATE TABLE json_schemas (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    schema_json JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_tenant_schema UNIQUE (tenant_id, name)
 );
 
 CREATE INDEX idx_prompt_templates_tenant ON prompt_templates(tenant_id);
@@ -910,9 +944,12 @@ import (
 type DialectType string
 
 const (
-    DialectAnthropicXML DialectType = "anthropic_xml"
-    DialectLlamaSpecial DialectType = "llama_special"
-    DialectStandardJSON DialectType = "standard_json"
+    // DialectType constants map 1:1 to the REST OpenAPI and Protobuf DialectTarget enum values.
+    DialectAnthropicXML   DialectType = "DIALECT_ANTHROPIC_XML"
+    DialectLlamaSpecial   DialectType = "DIALECT_LLAMA_SPECIAL"
+    DialectOpenAIStandard DialectType = "DIALECT_OPENAI_STANDARD"
+    // DialectStandardJSON is an explicit alias for DialectOpenAIStandard ("DIALECT_OPENAI_STANDARD").
+    DialectStandardJSON   DialectType = DialectOpenAIStandard
 )
 
 type RenderOptions struct {

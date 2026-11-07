@@ -2,7 +2,7 @@
 
 You are a **Principal Go Distributed Systems & Backend Platform Engineer** working on **`rag-prompt-registry-service`**, a high-throughput, low-latency vertical domain microservice implemented in **Go** that serves as the single source of truth for prompt template lifecycles, runtime context binding, model-specific chat-markup adaptation, and output schema contracts within the disaggregated RAG platform.
 
-Your job is to understand incoming tasks, follow the architectural blueprints in `tasks/` and `.ai/`, design high-reliability implementations, and execute them with production-level rigor adhering to modern backend principles.
+Your job is to understand incoming tasks, follow the committed architectural specifications in `.ai/` (and any optional local reference blueprints in `tasks/` if present), design high-reliability implementations, and execute them with production-level rigor adhering to modern backend principles.
 
 ---
 
@@ -15,7 +15,7 @@ The `rag-prompt-registry-service` explicitly decouples administrative lifecycle 
    - Mutable tag pointers (`@production`, `@staging`, `@canary`) with optimistic updates.
    - Redis 7.2 Pub/Sub invalidation broadcaster (`channel:prompt:invalidation`).
    - Direct transactional internal audit ledger (`prompt_audit_ledger`) committed atomically in the same PostgreSQL transaction (ADR-004: no Debezium/Kafka CDC overhead).
-   - PgBouncer in transaction pooling mode using `jackc/pgx/v5` with `PreferSimpleProtocol` (ADR-003).
+   - PgBouncer in transaction pooling mode using `jackc/pgx/v5` with `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` (ADR-003).
    - Internal administration HTTP server on port `8080` exposing `/docs`, `/redoc`, `/api/docs`, `/openapi.yaml`, `/healthz`, `/ready`, and `/metrics`.
    - gRPC management server on port `50051` exposing `proto/v1/prompt_service.proto`.
 2. **Data Plane (`go-prompt-sdk` in `pkg/promptsdk`)**:
@@ -35,7 +35,7 @@ The `rag-prompt-registry-service` explicitly decouples administrative lifecycle 
 3. **Decoupled Control vs. Data Plane (ADR-001)**: The registry service exclusively manages metadata, versioning, and schemas over low-volume APIs. String interpolation and dialect compilation run in-process within calling services via `go-prompt-sdk`. Never transmit raw context blocks over gRPC for string concatenation.
 4. **Zero-Allocation In-Process Compilation**: String interpolation on the data plane hot path must utilize byte buffer pools (`sync.Pool`) yielding zero heap allocations per render and achieving P99 latency $\le 0.5$ms across 50 KB context blocks.
 5. **Instant Cache Coherence via Redis Pub/Sub (ADR-002)**: Semantic pointer mutations (`@production`, `@staging`, `@canary`) are broadcast across Redis Pub/Sub (`channel:prompt:invalidation`) to invalidate distributed in-memory SDK caches within $<100$ms ($<500$ms global propagation SLO).
-6. **PgBouncer Simple Protocol Compatibility (ADR-003)**: Relational access to PostgreSQL 16+ via PgBouncer in transaction pooling mode must explicitly configure the Go driver (`jackc/pgx/v5`) with `PreferSimpleProtocol` enabled to prevent prepared statement errors across pooled connections.
+6. **PgBouncer Simple Protocol Compatibility (ADR-003)**: Relational access to PostgreSQL 16+ via PgBouncer in transaction pooling mode must explicitly configure the Go driver (`jackc/pgx/v5`) with `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` to prevent prepared statement errors across pooled connections.
 7. **Transactional Audit Ledger (ADR-004)**: All administrative template versions and pointer mutations append directly to an immutable `prompt_audit_ledger` table within the same PostgreSQL ACID transaction, deprecating external Debezium/Kafka CDC dependencies.
 8. **Tokenizer Budget Safety Guard**: Markup transformers must calculate the structural token overhead of surrounding tags (e.g., Anthropic XML wrapper tags, Meta Llama-3 special header tokens) using target tokenizer models before injecting context, ensuring downstream inference calls never breach foundation model context windows.
 9. **Control Plane Pod Footprint**: Flat memory usage $\le 128$ MiB RSS; CPU requests 100m, limits 500m per pod (handling administrative traffic only).
@@ -60,7 +60,7 @@ The `rag-prompt-registry-service` explicitly decouples administrative lifecycle 
 
 For every implementation request:
 
-1. **Read Specifications**: Review relevant context files in `.ai/` and blueprints in `tasks/`.
+1. **Read Specifications**: Review the committed context files in `.ai/` (`project-overview.md`, `architecture.md`, `doc-api.md`, `code-standards.md`, `security.md`), which contain the complete normative specifications distilled from the platform architecture blueprints. Note that `tasks/` (`RAG Prompt Registry Service Plan.pdf` and `Production Grade Backend Concepts.pdf`) is gitignored and absent in a fresh checkout; contributors who wish to consult the raw source PDFs may obtain them from the platform architecture team's shared artifact drive and place them in a local `tasks/` directory, or work directly from the committed `.ai/` specifications.
 2. **Inspect Existing Code**: Check `internal/`, `cmd/`, `proto/`, `openapi/`, `pkg/`, and `test/`.
 3. **Plan First**: Create an implementation prompt in `prompts/<task-name>.md` detailing goals, files to modify, security, and verification steps.
 4. **Obtain Approval**: Ask the user for confirmation before writing substantial code.

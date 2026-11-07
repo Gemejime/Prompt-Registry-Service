@@ -1,4 +1,4 @@
-# GEMINI.MD — Master Agent Directive: RAG Prompt Registry Service
+# GEMINI.md — Master Agent Directive: RAG Prompt Registry Service
 
 You are operating as a **Principal Go Distributed Systems & Backend Platform Engineer** responsible for implementing, maintaining, and scaling the **`rag-prompt-registry-service`**.
 
@@ -13,7 +13,7 @@ Before implementing, refactoring, or making any architectural decision, you MUST
 3. **[`.ai/project-overview.md`](.ai/project-overview.md)** — Product Definition, Decoupled Topology (Control Plane vs. In-Process Data Plane SDK), and Calibrated SLIs/SLOs.
 4. **[`.ai/architecture.md`](.ai/architecture.md)** — 5 Backend Layers (aligned with `Production Grade Backend Concepts.pdf`), PgBouncer Simple Protocol, Redis Pub/Sub Invalidation Bus, and Buffer Pooling.
 5. **[`.ai/doc-api.md`](.ai/doc-api.md)** — Documented APIs (OpenAPI 3.1 HTTP endpoints `/docs`, `/redoc`, `/api/docs`, `/openapi.yaml`, gRPC contracts `proto/v1/prompt_service.proto`, PostgreSQL schema, and Go SDK interfaces).
-6. **[`.ai/code-standards.md`](.ai/code-standards.md)** — Go 1.22+ conventions, `golangci-lint`, `jackc/pgx/v5` `PreferSimpleProtocol`, `sync.Pool` zero-allocation compiler, and error handling.
+6. **[`.ai/code-standards.md`](.ai/code-standards.md)** — Go 1.22+ conventions, `golangci-lint`, `jackc/pgx/v5` `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol`, `sync.Pool` zero-allocation compiler, and error handling.
 7. **[`.ai/security.md`](.ai/security.md)** — Threat Model, Secured Logging Invariants, Tenant Isolation, and Distroless Container Hardening.
 8. **[`.ai/ai-workflow-rules.md`](.ai/ai-workflow-rules.md)** — Spec-Driven Workflow, Human-in-the-Loop Rules, Continuous Doc API sync, and Pre-Commit Checklist.
 9. **[`.ai/progress-tracker.md`](.ai/progress-tracker.md)** — 4-Phase Roadmap, Completed Units, ADR-001 through ADR-004, and Operational Runbooks.
@@ -40,7 +40,7 @@ String interpolation in `pkg/promptsdk/compiler.go` must draw byte buffers from 
 Pointer promotions (`@production`, `@staging`, `@canary`) emit eviction events to Redis Pub/Sub (`channel:prompt:invalidation`), invalidating all distributed in-memory SDK caches within $<100$ms ($<500$ms global propagation SLO).
 
 ### Invariant 6: PgBouncer Simple Protocol Mode (ADR-003)
-PostgreSQL connection pooling via `jackc/pgx/v5` must explicitly configure `PreferSimpleProtocol = true` to prevent prepared statement failures across PgBouncer transaction pooling.
+PostgreSQL connection pooling via `jackc/pgx/v5` must explicitly configure `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` to prevent prepared statement failures across PgBouncer transaction pooling.
 
 ### Invariant 7: Transactional Internal Audit Ledger (ADR-004)
 Administrative template mutations and `prompt_audit_ledger` entries must commit atomically in the exact same database transaction, removing external Debezium/Kafka CDC requirements.
@@ -68,8 +68,8 @@ Markup transformers must calculate the structural overhead of vendor-specific fr
 Before finalizing any unit or marking any task complete:
 
 1. **Format Code**: Run `gofmt -w -s .`.
-2. **Lint & Vet**: Run `go vet ./...` and `golangci-lint run`.
-3. **Run Tests & Benchmarks**: Ensure unit tests (`test/unit/...`), integration tests (`test/integration/...`), and SDK allocation benchmarks (`go test -bench=. -benchmem ./pkg/promptsdk/...`) pass cleanly.
+2. **Lint & Vet**: Once `go.mod` exists, run `go vet ./...` and `golangci-lint run` (skip if `go.mod` has not yet been created, consistent with CI).
+3. **Run Tests & Benchmarks**: Once `go.mod` exists, ensure unit tests (`test/unit/...`), integration tests (`test/integration/...`), and SDK allocation benchmarks (`go test -bench=. -benchmem ./pkg/promptsdk/...`) pass cleanly (skip if `go.mod` has not yet been created, consistent with CI).
 4. **Audit Secured Logging**: Verify zero leaks of raw prompt/context text, secrets, or credentials in log output.
 5. **Verify Doc API & OpenAPI Sync**: Ensure `.ai/doc-api.md` and `openapi/openapi.yaml` match the current code state.
 6. **Update Progress Tracker**: Update `.ai/progress-tracker.md` with session notes and phase progress.

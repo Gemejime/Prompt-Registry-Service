@@ -6,11 +6,14 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local Control Plane Administration Server
+security:
+  - bearerAuth: []
 paths:
   /healthz:
     get:
       summary: Liveness Probe
       operationId: getLiveness
+      security: []
       responses:
         '200':
           description: Server process is responsive
@@ -27,6 +30,7 @@ paths:
     get:
       summary: Readiness Probe
       operationId: getReadiness
+      security: []
       responses:
         '200':
           description: Server is ready to handle traffic
@@ -55,6 +59,7 @@ paths:
     get:
       summary: Prometheus Metrics
       operationId: getMetrics
+      security: []
       responses:
         '200':
           description: Prometheus exposition metrics
@@ -66,6 +71,7 @@ paths:
     get:
       summary: OpenAPI 3.1 Specification in YAML
       operationId: getOpenAPISpec
+      security: []
       responses:
         '200':
           description: Raw OpenAPI YAML file
@@ -77,6 +83,7 @@ paths:
     get:
       summary: Alias for OpenAPI 3.1 Specification
       operationId: getAPIDocs
+      security: []
       responses:
         '200':
           description: OpenAPI Specification
@@ -105,6 +112,12 @@ paths:
                 $ref: '#/components/schemas/TemplateResponse'
         '400':
           description: Invalid input payload or AST schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Referenced output schema not found
           content:
             application/json:
               schema:
@@ -141,7 +154,7 @@ paths:
   /v1/templates/{id}/versions:
     post:
       summary: Publish Immutable Version
-      description: Create next immutable version v_{n+1} with AST and optional JSON schema contract.
+      description: Create next immutable version v_{n+1} with AST and registered JSON schema contract.
       operationId: publishVersion
       parameters:
         - name: id
@@ -170,7 +183,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Template not found
+          description: Template or referenced output schema not found
           content:
             application/json:
               schema:
@@ -248,6 +261,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Template or target version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Tag pointer version conflict (current pointer version does not match expected_version)
           content:
             application/json:
               schema:
@@ -365,10 +384,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Bearer JWT token with tenant_id and administrative role claims (prompt:write, prompt:publish, tag:promote).
   schemas:
     CreateTemplateRequest:
       type: object
-      required: [tenant_id, name, raw_ast, author]
+      required: [tenant_id, name, raw_ast, schema_id, author]
       properties:
         tenant_id:
           type: string
@@ -385,30 +410,37 @@ components:
         schema_id:
           type: string
           format: uuid
+          description: Registered JSON schema UUID governing structured output contract (must resolve to an existing schema)
         author:
           type: string
           example: "system-admin"
 
     PublishVersionRequest:
       type: object
-      required: [raw_ast, author]
+      required: [raw_ast, schema_id, author]
       properties:
         raw_ast:
           $ref: '#/components/schemas/TemplateAST'
         schema_id:
           type: string
           format: uuid
+          description: Registered JSON schema UUID governing structured output contract (must resolve to an existing schema)
         author:
           type: string
           example: "system-admin"
 
     PromoteTagRequest:
       type: object
-      required: [target_version, updated_by]
+      required: [target_version, expected_version, updated_by]
       properties:
         target_version:
           type: integer
           example: 2
+        expected_version:
+          type: integer
+          minimum: 0
+          description: Expected current version of the tag pointer for atomic optimistic locking (0 if the tag is not yet assigned)
+          example: 1
         updated_by:
           type: string
           example: "deploy-pipeline"
@@ -487,7 +519,7 @@ components:
 
     VersionDetailResponse:
       type: object
-      required: [template_id, version, ast, author, created_at]
+      required: [template_id, version, ast, schema_id, author, created_at]
       properties:
         template_id:
           type: string
@@ -513,6 +545,7 @@ components:
       properties:
         templates:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/TemplateResponse'
         next_cursor:
@@ -598,6 +631,7 @@ components:
       properties:
         schemas:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/SchemaResponse'
         next_cursor:

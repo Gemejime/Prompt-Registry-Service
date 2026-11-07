@@ -8,7 +8,7 @@
 | **Control Plane Server** | Go Daemon (`cmd/prompt-registry-server/main.go`) | Administrative lifecycle governance, optimistic tag promotion, and schema registry |
 | **Data Plane SDK** | Embedded Go Library (`pkg/promptsdk`) | In-process string interpolation, dialect transformation, and local caching in calling orchestrators |
 | **Relational Storage** | PostgreSQL 16+ via PgBouncer | Immutable template versioning ($v_1 \dots v_n$), tag pointer store, and transactional audit ledger |
-| **Database Driver** | `jackc/pgx/v5` with `PreferSimpleProtocol` | Transaction pooling compatibility preventing prepared statement lookup errors |
+| **Database Driver** | `jackc/pgx/v5` (`QueryExecModeSimpleProtocol`) | Transaction pooling compatibility preventing prepared statement lookup errors |
 | **Cache & Bus** | Redis 7.2 Cluster | L2 distributed template cache & Pub/Sub invalidation bus (`channel:prompt:invalidation`) |
 | **Buffer Allocator** | `sync.Pool` | Reusable byte buffers achieving zero heap allocations during 50 KB context interpolation |
 | **Management APIs** | HTTP/REST + gRPC / Protobuf v3 | Low-frequency admin mutations, OpenAPI 3.1 contracts, health probes, and metrics |
@@ -52,7 +52,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
   - Token-bucket rate limiter guarding administrative write operations to protect the relational database from mutation storms.
 - **Idempotency**:
   - Immutable version publishing is idempotent: attempting to publish an identical template version digest returns the existing version without duplication.
-  - Semantic tag pointer mutations use optimistic locking with version comparison.
+  - Semantic tag pointer mutations use optimistic locking with atomic version comparison: `PromoteTagRequest` requires an `expected_version` precondition (`0` when assigning a tag for the first time, or the current `target_version` when updating an existing tag), returning `409 Conflict` (HTTP) or `ABORTED` (gRPC) if the stored pointer version does not match.
 
 ### Layer 2: Data Persistence & State
 - **Database Migrations & Immutability**:
@@ -63,7 +63,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
   - Deprecates external Kafka Connect / Debezium CDC pipelines for the prompt registry domain.
 - **Connection Pooling & PgBouncer Compatibility (ADR-003)**:
   - Connection pooling via `jackc/pgx/v5` pool.
-  - When communicating through PgBouncer in transaction pooling mode, the pool must be initialized with `PreferSimpleProtocol: true` to avoid prepared statement caching collisions across pooled connections.
+  - When communicating through PgBouncer in transaction pooling mode, the pool must be initialized with `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` to avoid prepared statement caching collisions across pooled connections.
 - **Caching Mechanics (L1 & L2)**:
   - **L1 Cache (In-Process on SDK)**: High-speed, read-through concurrent hash map residing in caller memory (`pkg/promptsdk/cache.go`). Keyed by immutable version identifiers (`template:{id}:v{version}`) with unbounded TTL, and mutable tag pointers (`template:{id}:tag:{tag}`) with 5-minute safety fallback TTL.
   - **L2 Cache (Distributed)**: Redis 7.2 Cluster caching canonical serialized AST definitions and JSON schemas.
@@ -159,7 +159,7 @@ rag-prompt-registry-service/
 │   ├── infrastructure/
 │   │   ├── persistence/
 │   │   │   ├── postgres/
-│   │   │   │   ├── pool.go           # pgx/v5 PreferSimpleProtocol configuration
+│   │   │   │   ├── pool.go           # pgx/v5 QueryExecModeSimpleProtocol configuration
 │   │   │   │   ├── prompt_repo.go    # Monotonic version and pointer queries
 │   │   │   │   └── audit_repo.go     # Direct relational audit ledger writer
 │   │   │   └── migrations/
@@ -191,7 +191,7 @@ rag-prompt-registry-service/
 
 - **ADR-001: Separation of Registry Control Plane and SDK Data Plane**: The registry service exclusively manages metadata, versioning, and schemas over low-volume APIs. String interpolation and dialect compilation run in-process within calling services via `go-prompt-sdk` to eliminate network serialization bottlenecks.
 - **ADR-002: Invalidation via Redis Pub/Sub**: Eliminates static TTL split-brain windows by broadcasting tag pointer updates (`@production`) to all distributed SDK caches over Redis Pub/Sub (`channel:prompt:invalidation`).
-- **ADR-003: Simple Protocol Mode for PgBouncer**: Configures the PostgreSQL connection pool (`jackc/pgx/v5`) to use Simple Protocol Mode (`PreferSimpleProtocol: true`), avoiding prepared statement failures in transaction pooling mode.
+- **ADR-003: Simple Protocol Mode for PgBouncer**: Configures the PostgreSQL connection pool (`jackc/pgx/v5`) to use Simple Protocol Mode (`ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol`), avoiding prepared statement failures in transaction pooling mode.
 - **ADR-004: Lightweight Audit Ledger**: Administrative changes write directly to an internal `prompt_audit_ledger` table within the same transaction, deprecating external Debezium/Kafka CDC requirements for this service.
 
 ---
@@ -201,7 +201,7 @@ rag-prompt-registry-service/
 ### Runbook 1: Immediate Pointer Rollback
 1. Identify application regressions triggered by a new prompt version.
 2. Run the pointer mutation command via CLI or admin endpoint:
-   `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "updated_by": "admin-rollback"}`.
+   `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "expected_version": <current_version_int>, "updated_by": "admin-rollback"}`.
    *(Note: `{id}` is either the template UUID or tenant-unique template name)*.
 3. The service updates PostgreSQL and emits an invalidation event to Redis Pub/Sub.
 4. Confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
