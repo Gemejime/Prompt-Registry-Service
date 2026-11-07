@@ -28,11 +28,14 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
   - Concurrently serves the gRPC management server on port `50051` exposing `proto/v1/prompt_service.proto`.
 - **Endpoints & Routing**:
   - `POST /v1/templates`: Create template aggregate and publish initial immutable version $v_1$.
+  - `GET /v1/templates`: Paginated listing of registered prompt templates within tenant.
   - `POST /v1/templates/{id}/versions`: Publish new immutable template version $v_{n+1}$.
   - `GET /v1/templates/{id}/versions/{version}`: Fetch canonical AST representation for specific version.
   - `PUT /v1/templates/{id}/tags/{tag}`: Atomically promote semantic pointer tag (e.g. `@production -> v2`) and trigger Redis Pub/Sub invalidation.
-  - `GET /v1/templates/{id}/tags/{tag}`: Resolve current target version of a semantic tag pointer.
+  - `GET /v1/templates/{id}/tags/{tag}`: Resolve current target version and AST of a semantic tag pointer.
   - `POST /v1/schemas`: Register JSON output schema contracts.
+  - `GET /v1/schemas`: Paginated listing of registered output schemas.
+  - `GET /v1/schemas/{id}`: Retrieve JSON output schema definition by ID.
   - `GET /docs`: Interactive Swagger UI powered by OpenAPI 3.1.
   - `GET /redoc`: Interactive ReDoc UI.
   - `GET /api/docs` & `GET /openapi.yaml`: Machine-readable OpenAPI 3.1 specification.
@@ -54,7 +57,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
 ### Layer 2: Data Persistence & State
 - **Database Migrations & Immutability**:
   - Version-controlled SQL migration files in `internal/infrastructure/persistence/postgres/migrations/`.
-  - Tables: `prompt_templates`, `prompt_versions` (append-only, strict monotonic versions $v_1 \dots v_n$), `prompt_tags` (mutable pointers `@production`, `@staging`, `@canary`), `prompt_audit_ledger` (immutable compliance log), and `json_schemas`.
+  - Tables: `prompt_templates`, `prompt_versions` (append-only, strict monotonic versions $v_1 \dots v_n$), `prompt_tags` (mutable pointers `@production`, `@staging`, `@canary` with tenant-scoped isolation `(tenant_id, template_id, tag)`), `prompt_audit_ledger` (immutable compliance log with tenant scoping), and `json_schemas`.
 - **Database Transactions (ACID) & Internal Audit Ledger (ADR-004)**:
   - All template mutations and corresponding `prompt_audit_ledger` records are written atomically within the same PostgreSQL transaction.
   - Deprecates external Kafka Connect / Debezium CDC pipelines for the prompt registry domain.
@@ -198,7 +201,8 @@ rag-prompt-registry-service/
 ### Runbook 1: Immediate Pointer Rollback
 1. Identify application regressions triggered by a new prompt version.
 2. Run the pointer mutation command via CLI or admin endpoint:
-   `PUT /v1/templates/{name}/tags/@production` with payload: `{"version": "v_{previous}"}`.
+   `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "updated_by": "admin-rollback"}`.
+   *(Note: `{id}` is either the template UUID or tenant-unique template name)*.
 3. The service updates PostgreSQL and emits an invalidation event to Redis Pub/Sub.
 4. Confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
 

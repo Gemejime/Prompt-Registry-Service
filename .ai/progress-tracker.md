@@ -37,6 +37,11 @@
     - Integrated core 5-layer concepts from `Production Grade Backend Concepts.pdf` into architecture and code standards.
   - **Master Agent Directive** (`GEMINI.MD`):
     - Created comprehensive system prompt referencing `.ai/agents.md` and all `.ai/` context files, enforcing non-negotiable invariants, secured logging, continuous Doc API / OpenAPI updates, and Git commit standards.
+  - **Pressure Testing & Contract Hardening**:
+    - Pressure-tested full system architecture, directives, and invariants against `tasks/RAG Prompt Registry Service Plan.pdf` and backend standards.
+    - Synchronized `openapi/openapi.yaml` and `.ai/doc-api.md` to 100% path and model parity (adding schemas endpoints, version AST lookups, and pointer resolution).
+    - Hardened PostgreSQL DDL with explicit `tenant_id` defense-in-depth on `prompt_tags` and `prompt_audit_ledger` with composite constraints and indices.
+    - Unified operational rollback runbook parameters and contracts.
 
 ---
 
@@ -54,7 +59,8 @@
 ### Runbook 1: Immediate Pointer Rollback
 1. Identify application regressions triggered by a new prompt version.
 2. Run the pointer mutation command via CLI or admin endpoint:
-   `PUT /v1/templates/{name}/tags/@production` with payload: `{"version": "v_{previous}"}`.
+   `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "updated_by": "admin-rollback"}`.
+   *(Note: `{id}` is either the template UUID or tenant-unique template name)*.
 3. The service updates PostgreSQL and emits an invalidation event to Redis Pub/Sub.
 4. Confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
 

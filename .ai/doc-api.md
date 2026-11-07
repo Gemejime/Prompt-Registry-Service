@@ -31,13 +31,14 @@ The control plane process (`rag-prompt-registry-service`) runs an internal HTTP 
 
 | Endpoint | Method | Request Payload | Response Codes | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `/v1/templates` | `POST` | `CreateTemplateRequest` | `201 Created`, `400 Bad Request` | Initialize template aggregate root and publish initial version $v_1$ |
-| `/v1/templates` | `GET` | Cursor query parameters | `200 OK` | Paginated listing of registered prompt templates |
-| `/v1/templates/{id}/versions` | `POST` | `PublishVersionRequest` | `201 Created`, `409 Conflict` | Create next immutable version $v_{n+1}$ with AST and schema contract |
+| `/v1/templates` | `POST` | `CreateTemplateRequest` | `201 Created`, `400 Bad Request`, `409 Conflict` | Initialize template aggregate root and publish initial version $v_1$ |
+| `/v1/templates` | `GET` | Cursor query parameters (`limit`, `cursor`) | `200 OK` | Paginated listing of registered prompt templates |
+| `/v1/templates/{id}/versions` | `POST` | `PublishVersionRequest` | `201 Created`, `400 Bad Request`, `404 Not Found` | Create next immutable version $v_{n+1}$ with AST and schema contract |
 | `/v1/templates/{id}/versions/{version}` | `GET` | None | `200 OK`, `404 Not Found` | Retrieve immutable canonical AST representation |
-| `/v1/templates/{id}/tags/{tag}` | `PUT` | `PromoteTagRequest` | `200 OK`, `404 Not Found` | Atomically mutate semantic tag pointer (`@production`) & emit Redis Pub/Sub |
-| `/v1/templates/{id}/tags/{tag}` | `GET` | None | `200 OK`, `404 Not Found` | Resolve current target version assigned to a tag pointer |
-| `/v1/schemas` | `POST` | `RegisterSchemaRequest` | `201 Created`, `400 Bad Request` | Register or update JSON output validation schema contract |
+| `/v1/templates/{id}/tags/{tag}` | `PUT` | `PromoteTagRequest` | `200 OK`, `400 Bad Request`, `404 Not Found` | Atomically mutate semantic tag pointer (`@production`) & emit Redis Pub/Sub |
+| `/v1/templates/{id}/tags/{tag}` | `GET` | None | `200 OK`, `404 Not Found` | Resolve current target version and AST assigned to a tag pointer |
+| `/v1/schemas` | `POST` | `RegisterSchemaRequest` | `201 Created`, `400 Bad Request`, `409 Conflict` | Register or update JSON output validation schema contract |
+| `/v1/schemas` | `GET` | Cursor query parameters (`limit`, `cursor`) | `200 OK` | Paginated listing of registered JSON output schemas |
 | `/v1/schemas/{id}` | `GET` | None | `200 OK`, `404 Not Found` | Fetch registered JSON output schema definition |
 
 ---
@@ -48,7 +49,7 @@ The control plane process (`rag-prompt-registry-service`) runs an internal HTTP 
 openapi: 3.1.0
 info:
   title: RAG Prompt Registry Service API
-  description: Control Plane Administration, AST Template Lineage, and Output Schema Registry
+  description: Control Plane Administration, AST Template Lineage, and Output Schema Registry for rag-prompt-registry-service
   version: 1.0.0
 servers:
   - url: http://localhost:8080
@@ -94,9 +95,48 @@ paths:
                 required: [status, postgres, redis]
         '503':
           description: Database or cache dependency unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /metrics:
+    get:
+      summary: Prometheus Metrics
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Prometheus exposition metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+  /openapi.yaml:
+    get:
+      summary: OpenAPI 3.1 Specification in YAML
+      operationId: getOpenAPISpec
+      responses:
+        '200':
+          description: Raw OpenAPI YAML file
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/docs:
+    get:
+      summary: Alias for OpenAPI 3.1 Specification
+      operationId: getAPIDocs
+      responses:
+        '200':
+          description: OpenAPI Specification
+          content:
+            application/yaml:
+              schema:
+                type: string
+
   /v1/templates:
     post:
       summary: Create Prompt Template
+      description: Initialize template aggregate root and publish initial immutable version v1.
       operationId: createTemplate
       requestBody:
         required: true
@@ -111,8 +151,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TemplateResponse'
+        '400':
+          description: Invalid input payload or AST schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Template name conflict within tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       summary: List Prompt Templates
+      description: Paginated listing of registered prompt templates within tenant.
       operationId: listTemplates
       parameters:
         - name: limit
@@ -120,25 +173,29 @@ paths:
           schema:
             type: integer
             default: 20
+            maximum: 100
         - name: cursor
           in: query
           schema:
             type: string
       responses:
         '200':
-          description: List of templates
+          description: Paginated list of templates
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListTemplatesResponse'
+
   /v1/templates/{id}/versions:
     post:
       summary: Publish Immutable Version
+      description: Create next immutable version v_{n+1} with AST and optional JSON schema contract.
       operationId: publishVersion
       parameters:
         - name: id
           in: path
           required: true
+          description: Template UUID or unique name
           schema:
             type: string
       requestBody:
@@ -154,19 +211,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VersionResponse'
+        '400':
+          description: Invalid AST or schema ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/templates/{id}/versions/{version}:
+    get:
+      summary: Retrieve Specific Template Version
+      description: Fetch immutable canonical AST representation and schema contract for a specific version.
+      operationId: getTemplateVersion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Template UUID or unique name
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          description: Version number (e.g. 1, 2)
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Canonical AST definition and schema association
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionDetailResponse'
+        '404':
+          description: Template or version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/templates/{id}/tags/{tag}:
     put:
       summary: Promote Semantic Tag Pointer
+      description: Atomically mutate semantic tag pointer (@production, @staging, @canary) and broadcast invalidation to Redis Pub/Sub.
       operationId: promoteTag
       parameters:
         - name: id
           in: path
           required: true
+          description: Template UUID or unique name
           schema:
             type: string
         - name: tag
           in: path
           required: true
+          description: Semantic tag name (e.g. @production)
           schema:
             type: string
             example: "@production"
@@ -175,15 +280,138 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                version:
-                  type: integer
-                  example: 2
-              required: [version]
+              $ref: '#/components/schemas/PromoteTagRequest'
       responses:
         '200':
-          description: Tag updated and invalidation broadcast
+          description: Tag updated and Redis invalidation event broadcast
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoteTagResponse'
+        '400':
+          description: Invalid target version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Template or target version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Resolve Semantic Tag Pointer
+      description: Resolve the current target version and AST assigned to a tag pointer.
+      operationId: resolveTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Template UUID or unique name
+          schema:
+            type: string
+        - name: tag
+          in: path
+          required: true
+          description: Semantic tag name (e.g. @production)
+          schema:
+            type: string
+            example: "@production"
+      responses:
+        '200':
+          description: Resolved target version and canonical AST
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveTagResponse'
+        '404':
+          description: Template or tag pointer not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/schemas:
+    post:
+      summary: Register JSON Output Schema
+      description: Register a new JSON schema contract for validating downstream structured LLM outputs.
+      operationId: registerSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSchemaRequest'
+      responses:
+        '201':
+          description: Schema registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterSchemaResponse'
+        '400':
+          description: Invalid JSON Schema draft specification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Schema name conflict within tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: List JSON Output Schemas
+      description: Paginated listing of registered output schemas.
+      operationId: listSchemas
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated list of registered schemas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSchemasResponse'
+
+  /v1/schemas/{id}:
+    get:
+      summary: Get JSON Output Schema
+      description: Retrieve the full JSON schema definition by ID.
+      operationId: getSchema
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Schema UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Registered schema contract details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaResponse'
+        '404':
+          description: Schema not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   schemas:
     CreateTemplateRequest:
@@ -193,47 +421,143 @@ components:
         tenant_id:
           type: string
           format: uuid
+          example: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
         name:
           type: string
           example: "rag-financial-summary"
-        raw_ast:
-          type: object
-          description: Canonical template AST
-        author:
+        description:
           type: string
-          example: "system-admin"
-    PublishVersionRequest:
-      type: object
-      required: [raw_ast, author]
-      properties:
+          example: "Financial report synthesis template with contextual citations"
         raw_ast:
-          type: object
+          $ref: '#/components/schemas/TemplateAST'
         schema_id:
           type: string
           format: uuid
         author:
           type: string
-    TemplateResponse:
+          example: "system-admin"
+
+    PublishVersionRequest:
       type: object
+      required: [raw_ast, author]
       properties:
-        id:
+        raw_ast:
+          $ref: '#/components/schemas/TemplateAST'
+        schema_id:
           type: string
-        name:
+          format: uuid
+        author:
           type: string
-        current_version:
-          type: integer
-    VersionResponse:
+          example: "system-admin"
+
+    PromoteTagRequest:
       type: object
+      required: [target_version, updated_by]
+      properties:
+        target_version:
+          type: integer
+          example: 2
+        updated_by:
+          type: string
+          example: "deploy-pipeline"
+
+    PromoteTagResponse:
+      type: object
+      required: [template_id, tag, target_version, broadcast_emitted]
       properties:
         template_id:
           type: string
+          format: uuid
+        tag:
+          type: string
+          example: "@production"
+        target_version:
+          type: integer
+          example: 2
+        broadcast_emitted:
+          type: boolean
+          example: true
+
+    ResolveTagResponse:
+      type: object
+      required: [template_id, tag, version, ast]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        tag:
+          type: string
+          example: "@production"
         version:
           type: integer
+          example: 2
+        ast:
+          $ref: '#/components/schemas/TemplateAST'
+
+    TemplateResponse:
+      type: object
+      required: [id, tenant_id, name, current_version, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "rag-financial-summary"
+        description:
+          type: string
+        current_version:
+          type: integer
+          example: 1
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    VersionResponse:
+      type: object
+      required: [template_id, version, created_at]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          example: 2
+        created_at:
+          type: string
+          format: date-time
+
+    VersionDetailResponse:
+      type: object
+      required: [template_id, version, ast, author, created_at]
+      properties:
+        template_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          example: 2
+        ast:
+          $ref: '#/components/schemas/TemplateAST'
+        schema_id:
+          type: string
+          format: uuid
+        author:
+          type: string
+          example: "system-admin"
+        created_at:
+          type: string
+          format: date-time
+
     ListTemplatesResponse:
       type: object
+      required: [templates]
       properties:
         templates:
           type: array
@@ -241,6 +565,106 @@ components:
             $ref: '#/components/schemas/TemplateResponse'
         next_cursor:
           type: string
+
+    TemplateAST:
+      type: object
+      required: [system_prompt, messages, variable_keys, default_dialect]
+      properties:
+        system_prompt:
+          type: string
+          example: "You are a specialized enterprise financial analyst assistant."
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageBlock'
+        variable_keys:
+          type: array
+          items:
+            type: string
+          example: ["context", "query"]
+        default_dialect:
+          type: string
+          enum: [DIALECT_ANTHROPIC_XML, DIALECT_LLAMA_SPECIAL, DIALECT_OPENAI_STANDARD]
+          example: "DIALECT_ANTHROPIC_XML"
+
+    MessageBlock:
+      type: object
+      required: [role, content_pattern]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+          example: "user"
+        content_pattern:
+          type: string
+          example: "Context:\n<context>{{context}}</context>\n\nQuery: {{query}}"
+
+    RegisterSchemaRequest:
+      type: object
+      required: [tenant_id, name, json_schema]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          example: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+        name:
+          type: string
+          example: "financial-metrics-output"
+        json_schema:
+          type: object
+          description: Draft-07 / 2020-12 valid JSON schema definition
+
+    RegisterSchemaResponse:
+      type: object
+      required: [schema_id]
+      properties:
+        schema_id:
+          type: string
+          format: uuid
+
+    SchemaResponse:
+      type: object
+      required: [id, tenant_id, name, schema_json, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        schema_json:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    ListSchemasResponse:
+      type: object
+      required: [schemas]
+      properties:
+        schemas:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaResponse'
+        next_cursor:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: "BAD_REQUEST"
+        message:
+          type: string
+          example: "Invalid template specification or syntax error"
+        details:
+          type: array
+          items:
+            type: string
 ```
 
 ---
@@ -386,7 +810,7 @@ message MessageBlock {
 ```sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Aggregates
+-- Aggregates root
 CREATE TABLE prompt_templates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL,
@@ -394,7 +818,7 @@ CREATE TABLE prompt_templates (
     description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_tenant_name UNIQUE (tenant_id, name)
+    CONSTRAINT uq_tenant_template_name UNIQUE (tenant_id, name)
 );
 
 -- Append-only immutable versions
@@ -409,20 +833,22 @@ CREATE TABLE prompt_versions (
     CONSTRAINT uq_template_version UNIQUE (template_id, version)
 );
 
--- Mutable tag pointers (@production, @staging, @canary)
+-- Mutable tag pointers (@production, @staging, @canary) with tenant isolation defense-in-depth
 CREATE TABLE prompt_tags (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
     template_id UUID NOT NULL REFERENCES prompt_templates(id) ON DELETE CASCADE,
     tag VARCHAR(64) NOT NULL, -- e.g. "@production"
     target_version INT NOT NULL,
     updated_by VARCHAR(255) NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_template_tag UNIQUE (template_id, tag)
+    CONSTRAINT uq_tenant_template_tag UNIQUE (tenant_id, template_id, tag)
 );
 
 -- Transactional compliance ledger (ADR-004: Direct write, no external CDC)
 CREATE TABLE prompt_audit_ledger (
     id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL,
     template_id UUID NOT NULL,
     action VARCHAR(64) NOT NULL, -- "VERSION_PUBLISHED", "TAG_PROMOTED"
     version INT,
@@ -442,9 +868,11 @@ CREATE TABLE json_schemas (
     CONSTRAINT uq_tenant_schema UNIQUE (tenant_id, name)
 );
 
+CREATE INDEX idx_prompt_templates_tenant ON prompt_templates(tenant_id);
 CREATE INDEX idx_prompt_versions_lookup ON prompt_versions(template_id, version);
-CREATE INDEX idx_prompt_tags_lookup ON prompt_tags(template_id, tag);
-CREATE INDEX idx_prompt_audit_template ON prompt_audit_ledger(template_id, created_at);
+CREATE INDEX idx_prompt_tags_lookup ON prompt_tags(tenant_id, template_id, tag);
+CREATE INDEX idx_prompt_audit_template ON prompt_audit_ledger(tenant_id, template_id, created_at);
+CREATE INDEX idx_json_schemas_tenant ON json_schemas(tenant_id);
 ```
 
 ---
@@ -456,6 +884,7 @@ CREATE INDEX idx_prompt_audit_template ON prompt_audit_ledger(template_id, creat
 ```json
 {
   "event_id": "01HXYZ1234567890ABCDEF",
+  "tenant_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
   "template_id": "7f8b9a2c-1234-5678-90ab-cdef12345678",
   "tag": "@production",
   "new_version": 2,
