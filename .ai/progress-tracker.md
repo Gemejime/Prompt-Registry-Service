@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 1: Schemas & Relational Core (Weeks 1–2)** (🟡 Initializing Foundation)
+- **Phase 1: Schemas & Relational Core (Weeks 1–2)** (🟢 Completed)
 
 ## Current Goal
 
-- Establish microservice foundation for `rag-prompt-registry-service`: `.gitignore`, GitHub Actions CI pipeline, OpenAPI 3.1 & Doc API contracts, master agent directives (`GEMINI.md`), and core architecture context files.
+- Phase 1 completed and verified. Ready to proceed to **Phase 2: In-Process Engine (`go-prompt-sdk`)**.
 
 ---
 
@@ -14,7 +14,7 @@
 
 | Phase | Timeline | Focus Area | Deliverables & Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Phase 1: Schemas & Relational Core** | Weeks 1–2 | Control Plane Database & Immutability | • `.gitignore` ignoring `tasks/` and build artifacts.<br>• Comprehensive GitHub Actions CI workflow (lint-and-typecheck, security-and-logging-audit, OpenAPI 3.1 sync, test-suites).<br>• Full `.ai` context overhaul and `GEMINI.md` aligned with backend concepts.<br>• PostgreSQL 16 schema with strict tenant isolation, immutable version tables, tag pointers, and an internal audit ledger.<br>• PgBouncer integration verifying Simple Protocol Mode via `jackc/pgx/v5`.<br>• Core gRPC/REST management APIs for prompt versioning and schema registration. | 🟡 In Progress |
+| **Phase 1: Schemas & Relational Core** | Weeks 1–2 | Control Plane Database & Immutability | • `.gitignore` ignoring `tasks/` and build artifacts.<br>• Comprehensive GitHub Actions CI workflow (lint-and-typecheck, security-and-logging-audit, OpenAPI 3.1 sync, test-suites).<br>• Full `.ai` context overhaul and `GEMINI.md` aligned with backend concepts.<br>• PostgreSQL 16 schema with strict tenant isolation, immutable version tables, tag pointers, and an internal audit ledger.<br>• PgBouncer integration verifying Simple Protocol Mode via `jackc/pgx/v5`.<br>• Core gRPC/REST management APIs for prompt versioning and schema registration. | 🟢 Completed |
 | **Phase 2: In-Process Engine (`go-prompt-sdk`)** | Weeks 3–4 | Compiler, Buffer Pools & Dialects | • Implementation of `go-prompt-sdk` featuring `sync.Pool` zero-allocation string interpolation.<br>• Dialect adapters for Anthropic XML, Meta Llama-3 special tokens, and standard JSON formats.<br>• Tokenizer budgeting hooks calculating framing overhead before interpolation.<br>• Unit test suite & memory benchmark validation ($P99 \le 0.5$ms, 0 heap escapes across 50 KB context blocks). | ⚪ Pending |
 | **Phase 3: Cache Invalidation & Orchestrator Wiring** | Weeks 5–6 | Redis Pub/Sub & SDK Synchronization | • Multi-instance cache invalidation bus via Redis Pub/Sub (`channel:prompt:invalidation`).<br>• Embedded SDK integration into `rag-search-orchestrator` pipeline.<br>• Benchmark validation: $<0.5$ms rendering times and $<500$ms pointer propagation. | ⚪ Pending |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Fault Tolerance & Release Gating | • Chaos testing: killing registry pods while validating uninterrupted SDK in-memory rendering.<br>• Allocation profiling verifying zero memory accumulation on 10,000 RPS orchestrator loads.<br>• Production deployment via Helm and canary cutover. | ⚪ Pending |
@@ -54,6 +54,13 @@
     - Modeled `persona_overrides` and `few_shot_exemplars` in `TemplateAST` across OpenAPI 3.1, Protobuf v3, and `.ai/doc-api.md`.
     - Hardened PostgreSQL 16+ schema with `ast_hash VARCHAR(64) NOT NULL` + index, `CHECK (version >= 1)` / `CHECK (target_version >= 1)`, composite FK `(template_id, target_version)` on `prompt_tags`, `SELECT ... FOR UPDATE` row locking for monotonic version allocation, and `BEFORE UPDATE OR DELETE` immutability triggers (`prevent_append_only_mutation()`) on `prompt_versions` and `prompt_audit_ledger`.
     - Added multi-tenant gRPC request scoping, dual `{id}` resolution (UUID vs. template `name`), 1 MiB payload guards for the $\le 128\text{ MiB}$ RSS limit, complete audit actions (`TEMPLATE_CREATED`, `VERSION_PUBLISHED`, `TAG_PROMOTED`, `TAG_ROLLED_BACK`, `SCHEMA_REGISTERED`), and explicit Phase 1 unit, benchmark, and integration test scenarios.
+  - **Phase 1 Schemas, Relational Core & Control Plane APIs Implementation**:
+    - Initialized `go.mod` (`rag-prompt-registry-service`), `Makefile`, and `.env.example`.
+    - Implemented PostgreSQL 16+ migrations (`internal/infrastructure/persistence/migrations/000001_init_schema.up.sql`, `000001_init_schema.down.sql`, and `migrations.go` via `//go:embed`) with `prevent_append_only_mutation()` triggers on `prompt_versions` and `prompt_audit_ledger`.
+    - Implemented PgBouncer Simple Protocol connection pool (`internal/infrastructure/persistence/postgres/pool.go`) setting `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` (ADR-003), transactional `prompt_repo.go`, `audit_repo.go`, and `memory_store.go` (ADR-004).
+    - Implemented Redis 7.2 L2 cache client (`cluster_client.go`) and Pub/Sub invalidation broadcaster (`invalidation_pub.go` on `channel:prompt:invalidation`, ADR-002).
+    - Implemented domain entities (`prompt_template.go`, `prompt_tag.go`, `audit_entry.go`), repositories (`prompt_repository.go`, `audit_repository.go`), and CQRS handlers (`publish_version.go`, `promote_tag.go`, `get_template_ast.go`, `list_templates.go`).
+    - Implemented Protobuf v3 contracts & gRPC server (`proto/v1/`, `internal/transport/grpc/prompt_admin_server.go`), HTTP REST & OpenAPI 3.1 Doc API router (`internal/transport/http/router.go`), control plane server entry point (`cmd/prompt-registry-server/main.go`), SDK scaffold (`pkg/promptsdk/`), and unit/integration/benchmark test suites (`test/unit/...`, `test/integration/...`).
 
 ---
 
