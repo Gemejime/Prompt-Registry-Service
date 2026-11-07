@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package rag.prompt.v1;
+
+option go_package = "rag-prompt-registry-service/proto/v1;promptv1";
+
+enum DialectTarget {
+  DIALECT_UNSPECIFIED = 0;
+  DIALECT_ANTHROPIC_XML = 1;
+  DIALECT_LLAMA_SPECIAL = 2;
+  DIALECT_OPENAI_STANDARD = 3;
+}
+
+message TemplateAST {
+  string system_prompt = 1;
+  repeated MessageBlock messages = 2;
+  repeated string variable_keys = 3;
+  DialectTarget default_dialect = 4;
+  map<string, string> persona_overrides = 5;
+  repeated MessageBlock few_shot_exemplars = 6;
+}
+
+message MessageBlock {
+  string role = 1; // "system", "user", "assistant"
+  string content_pattern = 2; // e.g. "Context:\n<context>{{context}}</context>\nQuery: {{query}}"
+}
+

@@ -1047,6 +1047,11 @@ type PromptSDK interface {
     // Close cleanly terminates Redis Pub/Sub listeners
     Close() error
 }
+
+// Pooled Buffer Helpers (Phase 1 Baseline):
+// - AcquireBuffer() *bytes.Buffer
+// - ReleaseBuffer(buf *bytes.Buffer)
+// - InterpolateIntoBuffer(dst *bytes.Buffer, pattern string, vars map[string]string)
 ```
 
 ---
