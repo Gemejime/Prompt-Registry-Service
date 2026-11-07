@@ -73,3 +73,4 @@ Before finalizing any unit or marking any task complete:
 4. **Audit Secured Logging**: Verify zero leaks of raw prompt/context text, secrets, or credentials in log output.
 5. **Verify Doc API & OpenAPI Sync**: Ensure `.ai/doc-api.md` and `openapi/openapi.yaml` match the current code state.
 6. **Update Progress Tracker**: Update `.ai/progress-tracker.md` with session notes and phase progress.
+

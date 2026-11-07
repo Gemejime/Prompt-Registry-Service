@@ -194,3 +194,4 @@ components:
             $ref: '#/components/schemas/TemplateResponse'
         next_cursor:
           type: string
+
