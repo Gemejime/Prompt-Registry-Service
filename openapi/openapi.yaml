@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: RAG Prompt Registry Service API
+  description: Control Plane Administration, AST Template Lineage, and Output Schema Registry for rag-prompt-registry-service
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local Control Plane Administration Server
+paths:
+  /healthz:
+    get:
+      summary: Liveness Probe
+      operationId: getLiveness
+      responses:
+        '200':
+          description: Server process is responsive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                required: [status]
+  /ready:
+    get:
+      summary: Readiness Probe
+      operationId: getReadiness
+      responses:
+        '200':
+          description: Server is ready to handle traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  postgres:
+                    type: string
+                    example: connected
+                  redis:
+                    type: string
+                    example: reachable
+                required: [status, postgres, redis]
+        '503':
+          description: Database or cache dependency unreachable
+  /v1/templates:
+    post:
+      summary: Create Prompt Template
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTemplateRequest'
+      responses:
+        '201':
+          description: Template successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateResponse'
+    get:
+      summary: List Prompt Templates
+      operationId: listTemplates
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of templates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTemplatesResponse'
+  /v1/templates/{id}/versions:
+    post:
+      summary: Publish Immutable Version
+      operationId: publishVersion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishVersionRequest'
+      responses:
+        '201':
+          description: Immutable version published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+  /v1/templates/{id}/tags/{tag}:
+    put:
+      summary: Promote Semantic Tag Pointer
+      operationId: promoteTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: tag
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "@production"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+                  example: 2
+              required: [version]
+      responses:
+        '200':
+          description: Tag updated and invalidation broadcast
+components:
+  schemas:
+    CreateTemplateRequest:
+      type: object
+      required: [tenant_id, name, raw_ast, author]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "rag-financial-summary"
+        raw_ast:
+          type: object
+          description: Canonical template AST
+        author:
+          type: string
+          example: "system-admin"
+    PublishVersionRequest:
+      type: object
+      required: [raw_ast, author]
+      properties:
+        raw_ast:
+          type: object
+        schema_id:
+          type: string
+          format: uuid
+        author:
+          type: string
+    TemplateResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        current_version:
+          type: integer
+    VersionResponse:
+      type: object
+      properties:
+        template_id:
+          type: string
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    ListTemplatesResponse:
+      type: object
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/TemplateResponse'
+        next_cursor:
+          type: string
