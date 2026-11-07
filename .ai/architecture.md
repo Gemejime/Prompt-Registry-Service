@@ -56,17 +56,17 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
 
 ### Layer 2: Data Persistence & State
 - **Database Migrations & Immutability**:
-  - Version-controlled SQL migration files in `internal/infrastructure/persistence/postgres/migrations/`.
-  - Tables: `prompt_templates`, `prompt_versions` (append-only, strict monotonic versions $v_1 \dots v_n$), `prompt_tags` (mutable pointers `@production`, `@staging`, `@canary` with tenant-scoped isolation `(tenant_id, template_id, tag)`), `prompt_audit_ledger` (immutable compliance log with tenant scoping), and `json_schemas`.
+  - Version-controlled SQL migration files in `internal/infrastructure/persistence/migrations/`.
+  - Tables: `prompt_templates`, `prompt_versions` (append-only, strict monotonic versions $v_1 \dots v_n$ with `ast_hash VARCHAR(64) NOT NULL` and `BEFORE UPDATE OR DELETE` immutability trigger), `prompt_tags` (mutable pointers `@production`, `@staging`, `@canary` with tenant-scoped isolation `(tenant_id, template_id, tag)` and composite foreign key `(template_id, target_version)` referencing `prompt_versions`), `prompt_audit_ledger` (immutable compliance log with tenant scoping and `BEFORE UPDATE OR DELETE` trigger), and `json_schemas`.
 - **Database Transactions (ACID) & Internal Audit Ledger (ADR-004)**:
-  - All template mutations and corresponding `prompt_audit_ledger` records are written atomically within the same PostgreSQL transaction.
+  - All template, version, tag, and schema mutations and corresponding `prompt_audit_ledger` records are written atomically within the same PostgreSQL transaction (`SELECT ... FOR UPDATE` serializes monotonic version allocation).
   - Deprecates external Kafka Connect / Debezium CDC pipelines for the prompt registry domain.
 - **Connection Pooling & PgBouncer Compatibility (ADR-003)**:
   - Connection pooling via `jackc/pgx/v5` pool.
   - When communicating through PgBouncer in transaction pooling mode, the pool must be initialized with `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` to avoid prepared statement caching collisions across pooled connections.
 - **Caching Mechanics (L1 & L2)**:
   - **L1 Cache (In-Process on SDK)**: High-speed, read-through concurrent hash map residing in caller memory (`pkg/promptsdk/cache.go`). Keyed by immutable version identifiers (`template:{id}:v{version}`) with unbounded TTL, and mutable tag pointers (`template:{id}:tag:{tag}`) with 5-minute safety fallback TTL.
-  - **L2 Cache (Distributed)**: Redis 7.2 Cluster caching canonical serialized AST definitions and JSON schemas.
+  - **L2 Cache (Distributed)**: Redis 7.2 Cluster caching canonical serialized AST definitions (`l2:tenant:{tenant_id}:template:{id}:v:{version}`), JSON schemas (`l2:tenant:{tenant_id}:schema:{id}`), and resolved tag pointers (`l2:tenant:{tenant_id}:template:{id}:tag:{tag}`) to sustain $P99 \le 2\text{ms}$ Control Plane Registry Read Latency.
 - **Pagination & Query Limits**:
   - Administrative template and version list endpoints enforce strict cursor-based pagination with upper bounds (`limit <= 100`) to prevent OOM errors.
 - **Resource Identification Strategies**:

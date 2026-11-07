@@ -619,6 +619,18 @@ components:
           type: string
           enum: [DIALECT_ANTHROPIC_XML, DIALECT_LLAMA_SPECIAL, DIALECT_OPENAI_STANDARD]
           example: "DIALECT_ANTHROPIC_XML"
+        persona_overrides:
+          type: object
+          description: Optional role/persona-specific system prompt overrides keyed by persona identifier
+          additionalProperties:
+            type: string
+          example:
+            executive: "You are a concise executive briefing assistant."
+        few_shot_exemplars:
+          type: array
+          description: Optional ordered few-shot exemplar message blocks
+          items:
+            $ref: '#/components/schemas/MessageBlock'
 
     MessageBlock:
       type: object
@@ -723,14 +735,17 @@ service PromptRegistryService {
   rpc ResolveTag (ResolveTagRequest) returns (ResolveTagResponse);
   rpc RegisterSchema (RegisterSchemaRequest) returns (RegisterSchemaResponse);
   rpc GetSchema (GetSchemaRequest) returns (GetSchemaResponse);
+  rpc ListTemplates (ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc ListSchemas (ListSchemasRequest) returns (ListSchemasResponse);
 }
 
 message CreateTemplateRequest {
   string tenant_id = 1;
   string name = 2;
   TemplateAST raw_ast = 3;
-  string schema_id = 4; // Required: must resolve to a registered JSON schema
+  string schema_id = 4; // Required: must resolve to a registered JSON schema in the same tenant
   string author = 5;
+  string description = 6;
 }
 
 message CreateTemplateResponse {
@@ -739,10 +754,11 @@ message CreateTemplateResponse {
 }
 
 message PublishVersionRequest {
-  string template_id = 1;
+  string template_id = 1; // Template UUID or unique name within tenant
   TemplateAST raw_ast = 2;
-  string schema_id = 3; // Required: must resolve to a registered JSON schema
+  string schema_id = 3; // Required: must resolve to a registered JSON schema in the same tenant
   string author = 4;
+  string tenant_id = 5; // Validated against caller JWT / x-tenant-id metadata
 }
 
 message PublishVersionResponse {
@@ -752,11 +768,12 @@ message PublishVersionResponse {
 }
 
 message PromoteTagRequest {
-  string template_id = 1;
+  string template_id = 1; // Template UUID or unique name within tenant
   string tag = 2; // e.g. "@production", "@staging", "@canary"
   uint32 target_version = 3;
   string updated_by = 4;
   uint32 expected_version = 5; // Required optimistic lock precondition (0 if unassigned); returns ABORTED on mismatch
+  string tenant_id = 6; // Validated against caller JWT / x-tenant-id metadata
 }
 
 message PromoteTagResponse {
@@ -767,8 +784,9 @@ message PromoteTagResponse {
 }
 
 message ResolveTagRequest {
-  string template_id = 1;
+  string template_id = 1; // Template UUID or unique name within tenant
   string tag = 2;
+  string tenant_id = 3;
 }
 
 message ResolveTagResponse {
@@ -779,8 +797,9 @@ message ResolveTagResponse {
 }
 
 message GetTemplateVersionRequest {
-  string template_id = 1;
+  string template_id = 1; // Template UUID or unique name within tenant
   uint32 version = 2;
+  string tenant_id = 3;
 }
 
 message GetTemplateVersionResponse {
@@ -788,6 +807,8 @@ message GetTemplateVersionResponse {
   uint32 version = 2;
   TemplateAST ast = 3;
   string schema_id = 4;
+  string author = 5;
+  string created_at = 6;
 }
 
 message RegisterSchemaRequest {
@@ -802,12 +823,47 @@ message RegisterSchemaResponse {
 
 message GetSchemaRequest {
   string schema_id = 1;
+  string tenant_id = 2;
 }
 
 message GetSchemaResponse {
   string schema_id = 1;
   string name = 2;
   string json_schema = 3;
+  string tenant_id = 4;
+  string created_at = 5;
+}
+
+message ListTemplatesRequest {
+  string tenant_id = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message TemplateSummary {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string description = 4;
+  uint32 current_version = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message ListTemplatesResponse {
+  repeated TemplateSummary templates = 1;
+  string next_cursor = 2;
+}
+
+message ListSchemasRequest {
+  string tenant_id = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message ListSchemasResponse {
+  repeated GetSchemaResponse schemas = 1;
+  string next_cursor = 2;
 }
 ```
 
@@ -831,6 +887,8 @@ message TemplateAST {
   repeated MessageBlock messages = 2;
   repeated string variable_keys = 3;
   DialectTarget default_dialect = 4;
+  map<string, string> persona_overrides = 5;
+  repeated MessageBlock few_shot_exemplars = 6;
 }
 
 message MessageBlock {
@@ -869,8 +927,9 @@ CREATE TABLE json_schemas (
 CREATE TABLE prompt_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     template_id UUID NOT NULL REFERENCES prompt_templates(id) ON DELETE RESTRICT,
-    version INT NOT NULL,
+    version INT NOT NULL CHECK (version >= 1),
     raw_ast JSONB NOT NULL,
+    ast_hash VARCHAR(64) NOT NULL,
     schema_id UUID NOT NULL REFERENCES json_schemas(id) ON DELETE RESTRICT,
     author VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -883,18 +942,20 @@ CREATE TABLE prompt_tags (
     tenant_id UUID NOT NULL,
     template_id UUID NOT NULL REFERENCES prompt_templates(id) ON DELETE CASCADE,
     tag VARCHAR(64) NOT NULL, -- e.g. "@production"
-    target_version INT NOT NULL,
+    target_version INT NOT NULL CHECK (target_version >= 1),
     updated_by VARCHAR(255) NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_tenant_template_tag UNIQUE (tenant_id, template_id, tag)
+    CONSTRAINT uq_tenant_template_tag UNIQUE (tenant_id, template_id, tag),
+    CONSTRAINT fk_prompt_tags_version FOREIGN KEY (template_id, target_version)
+        REFERENCES prompt_versions(template_id, version) ON DELETE RESTRICT
 );
 
 -- Transactional compliance ledger (ADR-004: Direct write, no external CDC)
 CREATE TABLE prompt_audit_ledger (
     id BIGSERIAL PRIMARY KEY,
     tenant_id UUID NOT NULL,
-    template_id UUID NOT NULL,
-    action VARCHAR(64) NOT NULL, -- "VERSION_PUBLISHED", "TAG_PROMOTED"
+    template_id UUID NOT NULL, -- Resource UUID (template_id or schema_id for SCHEMA_REGISTERED)
+    action VARCHAR(64) NOT NULL, -- "TEMPLATE_CREATED", "VERSION_PUBLISHED", "TAG_PROMOTED", "TAG_ROLLED_BACK", "SCHEMA_REGISTERED"
     version INT,
     tag VARCHAR(64),
     performed_by VARCHAR(255) NOT NULL,
@@ -902,8 +963,25 @@ CREATE TABLE prompt_audit_ledger (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Database-level immutability guard for append-only tables
+CREATE OR REPLACE FUNCTION prevent_append_only_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'Table % is strictly append-only; % operations are forbidden', TG_TABLE_NAME, TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_prompt_versions_immutable
+BEFORE UPDATE OR DELETE ON prompt_versions
+FOR EACH ROW EXECUTE FUNCTION prevent_append_only_mutation();
+
+CREATE TRIGGER trg_prompt_audit_ledger_immutable
+BEFORE UPDATE OR DELETE ON prompt_audit_ledger
+FOR EACH ROW EXECUTE FUNCTION prevent_append_only_mutation();
+
 CREATE INDEX idx_prompt_templates_tenant ON prompt_templates(tenant_id);
 CREATE INDEX idx_prompt_versions_lookup ON prompt_versions(template_id, version);
+CREATE INDEX idx_prompt_versions_hash ON prompt_versions(template_id, ast_hash);
 CREATE INDEX idx_prompt_tags_lookup ON prompt_tags(tenant_id, template_id, tag);
 CREATE INDEX idx_prompt_audit_template ON prompt_audit_ledger(tenant_id, template_id, created_at);
 CREATE INDEX idx_json_schemas_tenant ON json_schemas(tenant_id);

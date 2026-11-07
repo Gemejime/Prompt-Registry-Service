@@ -571,6 +571,18 @@ components:
           type: string
           enum: [DIALECT_ANTHROPIC_XML, DIALECT_LLAMA_SPECIAL, DIALECT_OPENAI_STANDARD]
           example: "DIALECT_ANTHROPIC_XML"
+        persona_overrides:
+          type: object
+          description: Optional role/persona-specific system prompt overrides keyed by persona identifier
+          additionalProperties:
+            type: string
+          example:
+            executive: "You are a concise executive briefing assistant."
+        few_shot_exemplars:
+          type: array
+          description: Optional ordered few-shot exemplar message blocks
+          items:
+            $ref: '#/components/schemas/MessageBlock'
 
     MessageBlock:
       type: object
