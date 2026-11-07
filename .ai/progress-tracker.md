@@ -48,6 +48,12 @@
     - Enforced required `schema_id` on `CreateTemplateRequest` and `PublishVersionRequest` (REST, gRPC, and PostgreSQL foreign key) and optimistic locking `expected_version` with `409 Conflict` / gRPC `ABORTED` on `PromoteTagRequest`.
     - Added global JWT `bearerAuth` security scheme (`security: []` on probe and documentation endpoints) and `maxItems: 100` bounds to OpenAPI 3.1 list responses.
     - Hardened `.github/workflows/ci.yml` (`permissions: contents: read`, `persist-credentials: false`, pinned `govulncheck@v1.1.3` and `gosec@v2.21.4`, `pipx` OpenAPI validator, case-insensitive `grep -qi`, and strict test failure propagation).
+  - **Phase 1 Implementation Plan Pressure-Test & Hardening (`prompts/phase-1-schemas-and-relational-core.md`)**:
+    - Mapped all 9 REST operations and 7+2 gRPC RPCs (`CreateTemplate`, `PublishVersion`, `GetTemplateVersion`, `PromoteTag`, `ResolveTag`, `RegisterSchema`, `GetSchema`, `ListTemplates`, `ListSchemas`) to the canonical PDF file tree.
+    - Added Redis 7.2 L2 read-through/write-through caching (`cluster_client.go`) for immutable AST versions, JSON schemas, and resolved tag pointers to achieve the $P99 \le 2\text{ms}$ Control Plane Registry Read Latency SLO.
+    - Modeled `persona_overrides` and `few_shot_exemplars` in `TemplateAST` across OpenAPI 3.1, Protobuf v3, and `.ai/doc-api.md`.
+    - Hardened PostgreSQL 16+ schema with `ast_hash VARCHAR(64) NOT NULL` + index, `CHECK (version >= 1)` / `CHECK (target_version >= 1)`, composite FK `(template_id, target_version)` on `prompt_tags`, `SELECT ... FOR UPDATE` row locking for monotonic version allocation, and `BEFORE UPDATE OR DELETE` immutability triggers (`prevent_append_only_mutation()`) on `prompt_versions` and `prompt_audit_ledger`.
+    - Added multi-tenant gRPC request scoping, dual `{id}` resolution (UUID vs. template `name`), 1 MiB payload guards for the $\le 128\text{ MiB}$ RSS limit, complete audit actions (`TEMPLATE_CREATED`, `VERSION_PUBLISHED`, `TAG_PROMOTED`, `TAG_ROLLED_BACK`, `SCHEMA_REGISTERED`), and explicit Phase 1 unit, benchmark, and integration test scenarios.
 
 ---
 
