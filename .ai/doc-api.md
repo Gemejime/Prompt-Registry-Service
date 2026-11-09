@@ -22,7 +22,7 @@ The control plane process (`rag-prompt-registry-service`) runs an internal HTTP 
 | `/api/docs` | `GET` | `application/yaml` | Raw OpenAPI 3.1 YAML specification |
 | `/openapi.yaml` | `GET` | `application/yaml` | Standard machine-readable OpenAPI 3.1 specification |
 | `/healthz` | `GET` | `application/json` | Liveness probe returning `{"status": "healthy"}` |
-| `/ready` | `GET` | `application/json` | Readiness probe verifying PostgreSQL pool and Redis cluster |
+| `/ready` | `GET` | `application/json` | Readiness probe verifying PostgreSQL pool and Redis cluster (Note: when `POSTGRES_DSN` is absent and `ALLOW_IN_MEMORY_STORE=true`, `CheckPostgres` succeeds against the non-durable in-memory store; a `200 OK` ready response does not confirm PostgreSQL is configured or that storage is durable) |
 | `/metrics` | `GET` | `text/plain` | Prometheus metrics scrape endpoint |
 
 ---
@@ -77,6 +77,7 @@ paths:
   /ready:
     get:
       summary: Readiness Probe
+      description: Verifies PostgreSQL pool and Redis cluster reachability. When POSTGRES_DSN is absent (with ALLOW_IN_MEMORY_STORE=true), CheckPostgres reports success without verifying PostgreSQL; a 200 OK response does not confirm PostgreSQL is configured or that storage is durable.
       operationId: getReadiness
       security: []
       responses:
@@ -1052,6 +1053,7 @@ type PromptSDK interface {
 // - AcquireBuffer() *bytes.Buffer
 // - ReleaseBuffer(buf *bytes.Buffer)
 // - InterpolateIntoBuffer(dst *bytes.Buffer, pattern string, vars map[string]string)
+// - InterpolateIntoBufferChecked(dst *bytes.Buffer, pattern string, vars map[string]string) error
 ```
 
 ---

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -28,6 +29,8 @@ import (
 	promptv1 "rag-prompt-registry-service/proto/v1"
 )
 
+// TestRESTControlPlaneLifecycleAndSecuredLogging verifies the HTTP REST endpoints, JWT authentication,
+// idempotency-key payload fingerprinting, and secured logging redaction invariants.
 func TestRESTControlPlaneLifecycleAndSecuredLogging(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -146,6 +149,31 @@ func TestRESTControlPlaneLifecycleAndSecuredLogging(t *testing.T) {
 			replayResp.StatusCode, replayResp.Header.Get("X-Idempotent-Replay"))
 	}
 
+	// Verify reusing the same Idempotency-Key with a modified payload returns 422 Unprocessable Entity
+	differentPayload := map[string]any{
+		"tenant_id":   tenantA,
+		"name":        "rag-financial-summary-different",
+		"description": "Different payload on same idempotency key",
+		"schema_id":   regSchemaResp.SchemaID,
+		"author":      "platform-architect",
+	}
+	mismatchResp, _ := doJSONRequest(t, http.MethodPost, ts.URL+"/v1/templates", tenantA, "idemp-create-1", differentPayload)
+	if mismatchResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 Unprocessable Entity when Idempotency-Key is reused with different payload, got %d", mismatchResp.StatusCode)
+	}
+
+	// Verify unauthenticated request to administrative endpoint returns 401 Unauthorized
+	unauthReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/templates", nil)
+	unauthReq.Header.Set("X-Tenant-ID", tenantA)
+	unauthResp, err := http.DefaultClient.Do(unauthReq)
+	if err != nil {
+		t.Fatalf("unauthenticated GET /v1/templates failed: %v", err)
+	}
+	_ = unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized without verified Bearer JWT, got %d", unauthResp.StatusCode)
+	}
+
 	// 4. Publish Version v2 using template name (dual identifier resolution)
 	publishV2Payload := map[string]any{
 		"schema_id": regSchemaResp.SchemaID,
@@ -255,6 +283,7 @@ func TestRESTControlPlaneLifecycleAndSecuredLogging(t *testing.T) {
 	}
 }
 
+// TestGRPCControlPlaneServerEndToEnd verifies the gRPC control plane service, JWT authentication, and optimistic locking.
 func TestGRPCControlPlaneServerEndToEnd(t *testing.T) {
 	store := postgres.NewTransactionalMemoryStore()
 	l2Cache := redis.NewInMemoryL2Cache()
@@ -284,7 +313,21 @@ func TestGRPCControlPlaneServerEndToEnd(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 
 	client := promptv1.NewPromptRegistryServiceClient(conn)
-	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-tenant-id", tenantID))
+
+	// Unauthenticated gRPC request (even with x-tenant-id metadata) must be rejected with codes.Unauthenticated
+	unauthCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-tenant-id", tenantID))
+	if _, unauthErr := client.ListTemplates(unauthCtx, &promptv1.ListTemplatesRequest{TenantId: tenantID}); status.Code(unauthErr) != codes.Unauthenticated {
+		t.Fatalf("expected codes.Unauthenticated without verified Bearer JWT, got %v", status.Code(unauthErr))
+	}
+
+	jwtToken, err := grpctransport.IssueHS256JWT(tenantID, grpctransport.DefaultJWTIssuer, grpctransport.DefaultJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("failed to issue test JWT: %v", err)
+	}
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		"authorization", "Bearer "+jwtToken,
+		"x-tenant-id", tenantID,
+	))
 
 	// 1. RegisterSchema via gRPC
 	regRes, err := client.RegisterSchema(ctx, &promptv1.RegisterSchemaRequest{
@@ -355,6 +398,7 @@ func TestGRPCControlPlaneServerEndToEnd(t *testing.T) {
 	}
 }
 
+// doJSONRequest executes an authenticated HTTP request with a signed Bearer JWT for tenantHeader.
 func doJSONRequest(t *testing.T, method, url, tenantHeader, idempKey string, payload any) (*http.Response, []byte) {
 	t.Helper()
 	var bodyReader io.Reader
@@ -373,6 +417,11 @@ func doJSONRequest(t *testing.T, method, url, tenantHeader, idempKey string, pay
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if tenantHeader != "" {
+		jwtToken, jwtErr := httptransport.IssueHS256JWT(tenantHeader, httptransport.DefaultJWTIssuer, httptransport.DefaultJWTSecret, time.Hour)
+		if jwtErr != nil {
+			t.Fatalf("failed to sign test JWT: %v", jwtErr)
+		}
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
 		req.Header.Set("X-Tenant-ID", tenantHeader)
 	}
 	if idempKey != "" {

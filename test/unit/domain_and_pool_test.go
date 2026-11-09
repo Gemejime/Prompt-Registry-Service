@@ -12,6 +12,7 @@ import (
 	"rag-prompt-registry-service/internal/infrastructure/persistence/postgres"
 )
 
+// TestTemplateASTValidationAndCanonicalHash verifies AST structural validation and canonical SHA-256 hashing.
 func TestTemplateASTValidationAndCanonicalHash(t *testing.T) {
 	validAST := entity.TemplateAST{
 		SystemPrompt: "You are a principal financial RAG synthesis assistant.",
@@ -89,6 +90,7 @@ func TestTemplateASTValidationAndCanonicalHash(t *testing.T) {
 	}
 }
 
+// TestJSONSchemaDraftValidation verifies Draft-07 and 2020-12 JSON Schema structural validation.
 func TestJSONSchemaDraftValidation(t *testing.T) {
 	rawValid := []byte(`{
 		"$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -121,6 +123,7 @@ func TestJSONSchemaDraftValidation(t *testing.T) {
 	}
 }
 
+// TestTagValidationAndOptimisticLocking verifies semantic tag naming rules and ExpectedVersion optimistic locking.
 func TestTagValidationAndOptimisticLocking(t *testing.T) {
 	for _, validTag := range []string{"@production", "@staging", "@canary", "@release-2026.11"} {
 		if err := entity.ValidateTagName(validTag); err != nil {
@@ -158,6 +161,7 @@ func TestTagValidationAndOptimisticLocking(t *testing.T) {
 	}
 }
 
+// TestPgBouncerSimpleProtocolPoolConfig verifies QueryExecModeSimpleProtocol configuration and DSN redaction.
 func TestPgBouncerSimpleProtocolPoolConfig(t *testing.T) {
 	dsn := "postgres://registry_user:super_secret_pw_123@localhost:6432/prompt_registry?sslmode=disable"
 	cfg, err := postgres.BuildPoolConfig(postgres.PoolOptions{
@@ -185,6 +189,7 @@ func TestPgBouncerSimpleProtocolPoolConfig(t *testing.T) {
 	}
 }
 
+// TestEmbeddedSQLMigrations verifies that embedded up and down SQL migration scripts contain all required DDL objects.
 func TestEmbeddedSQLMigrations(t *testing.T) {
 	upSQL, err := migrations.InitSchemaUp()
 	if err != nil {

@@ -61,6 +61,8 @@
     - Implemented Redis 7.2 L2 cache client (`cluster_client.go`) and Pub/Sub invalidation broadcaster (`invalidation_pub.go` on `channel:prompt:invalidation`, ADR-002).
     - Implemented domain entities (`prompt_template.go`, `prompt_tag.go`, `audit_entry.go`), repositories (`prompt_repository.go`, `audit_repository.go`), and CQRS handlers (`publish_version.go`, `promote_tag.go`, `get_template_ast.go`, `list_templates.go`).
     - Implemented Protobuf v3 contracts & gRPC server (`proto/v1/`, `internal/transport/grpc/prompt_admin_server.go`), HTTP REST & OpenAPI 3.1 Doc API router (`internal/transport/http/router.go`), control plane server entry point (`cmd/prompt-registry-server/main.go`), SDK scaffold (`pkg/promptsdk/`), and unit/integration/benchmark test suites (`test/unit/...`, `test/integration/...`).
+  - **Phase 1 Code Review Remediation & Hardening**:
+    - Enforced verified HS256 Bearer JWT authentication (`iss`, `exp`, `tenant_id` claims) across gRPC and HTTP administrative endpoints, bounded idempotency-key reservations with SHA-256 payload fingerprinting (`422 Unprocessable Entity` on mismatch), explicit `ALLOW_IN_MEMORY_STORE=true` opt-in, concurrent HTTP/gRPC graceful shutdown with forced gRPC stop on timeout, `pg_advisory_xact_lock` migration serialization, string-encoded JSONB query arguments for PgBouncer simple protocol, race-free L2 tag resolution updates, RESP `io.ReadFull` bulk-string reads, remote-only L2 lookups when Redis is configured, distinct `"json"` gRPC codec subtype registration, `{{{x}}}` and missing-key handling in `pkg/promptsdk`, and 100% Go docstring coverage.
 
 ---
 
@@ -80,8 +82,10 @@
 2. Run the pointer mutation command via CLI or admin endpoint:
    `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "expected_version": <current_version_int>, "updated_by": "admin-rollback"}`.
    *(Note: `{id}` is either the template UUID or tenant-unique template name)*.
-3. The service updates PostgreSQL and emits an invalidation event to Redis Pub/Sub.
-4. Confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
+3. A `200 OK` response confirms the pointer update and audit entry are durably committed in PostgreSQL; however, a committed pointer update is distinct from a successful Redis Pub/Sub invalidation publication. Do not treat or report the pointer rollback itself as failed or rolled back solely because Redis publication failed.
+4. Inspect `broadcast_emitted` in the `PromoteTagResponse` (and `prompt_invalidation_events_published_total{status="error"}`):
+   - If `broadcast_emitted` is `true`, confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
+   - If `broadcast_emitted` is `false`, the pointer in PostgreSQL is already committed at `<previous_version_int>`. To inform clients of the committed pointer once Redis connectivity is restored, re-issue `PUT /v1/templates/{id}/tags/@production` with `{"target_version": <previous_version_int>, "expected_version": <previous_version_int>, "updated_by": "admin-rollback-republish"}` to re-emit the invalidation broadcast, or invoke `PromptSDK.Invalidate(templateID, "@production")` / follow Runbook 2 on orchestrator instances.
 
 ### Runbook 2: Resolving Pub/Sub Invalidation Drops
 1. If an orchestrator instance loses its Redis Pub/Sub connection, it falls back to the 5-minute safety TTL on mutable pointer tags.

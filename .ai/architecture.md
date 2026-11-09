@@ -40,7 +40,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
   - `GET /redoc`: Interactive ReDoc UI.
   - `GET /api/docs` & `GET /openapi.yaml`: Machine-readable OpenAPI 3.1 specification.
   - `GET /healthz`: Liveness probe verifying server process responsiveness.
-  - `GET /ready`: Readiness probe verifying PostgreSQL pool connectivity and Redis cluster reachability.
+  - `GET /ready`: Readiness probe verifying PostgreSQL pool connectivity and Redis cluster reachability. When `POSTGRES_DSN` is absent (with `ALLOW_IN_MEMORY_STORE=true`), the daemon uses an in-memory store and `CheckPostgres` reports success without verifying PostgreSQL; operators are warned that a `200 OK` ready response does not confirm PostgreSQL is configured or that storage is durable.
   - `GET /metrics`: Prometheus metrics scrape endpoint.
 - **Middleware & Interception**:
   - Structured request tracing middleware injecting correlated `trace_id` and `request_id` (ULID) headers.
@@ -203,8 +203,10 @@ rag-prompt-registry-service/
 2. Run the pointer mutation command via CLI or admin endpoint:
    `PUT /v1/templates/{id}/tags/@production` with payload: `{"target_version": <previous_version_int>, "expected_version": <current_version_int>, "updated_by": "admin-rollback"}`.
    *(Note: `{id}` is either the template UUID or tenant-unique template name)*.
-3. The service updates PostgreSQL and emits an invalidation event to Redis Pub/Sub.
-4. Confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
+3. A `200 OK` response confirms the pointer update and audit entry are durably committed in PostgreSQL; however, a committed pointer update is distinct from a successful Redis Pub/Sub invalidation publication. Do not treat or report the pointer rollback itself as failed or rolled back solely because Redis publication failed.
+4. Inspect `broadcast_emitted` in the `PromoteTagResponse` (and `prompt_invalidation_events_published_total{status="error"}`):
+   - If `broadcast_emitted` is `true`, confirm via Prometheus that orchestrator nodes pick up the target version within $<500$ms.
+   - If `broadcast_emitted` is `false`, the pointer in PostgreSQL is already committed at `<previous_version_int>`. To inform clients of the committed pointer once Redis connectivity is restored, re-issue `PUT /v1/templates/{id}/tags/@production` with `{"target_version": <previous_version_int>, "expected_version": <previous_version_int>, "updated_by": "admin-rollback-republish"}` to re-emit the invalidation broadcast, or invoke `PromptSDK.Invalidate(templateID, "@production")` / follow Runbook 2 on orchestrator instances.
 
 ### Runbook 2: Resolving Pub/Sub Invalidation Drops
 1. If an orchestrator instance loses its Redis Pub/Sub connection, it falls back to the 5-minute safety TTL on mutable pointer tags.

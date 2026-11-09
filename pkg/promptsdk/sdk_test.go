@@ -1,10 +1,12 @@
 package promptsdk
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
 
+// TestDialectConstantsParity verifies that SDK dialect constants match OpenAPI and Protobuf enum names.
 func TestDialectConstantsParity(t *testing.T) {
 	if DialectAnthropicXML != "DIALECT_ANTHROPIC_XML" {
 		t.Fatalf("unexpected DialectAnthropicXML: %s", DialectAnthropicXML)
@@ -20,6 +22,7 @@ func TestDialectConstantsParity(t *testing.T) {
 	}
 }
 
+// TestInterpolateIntoBuffer verifies variable binding, adjacent braces {{{x}}}, and missing-key handling.
 func TestInterpolateIntoBuffer(t *testing.T) {
 	buf := AcquireBuffer()
 	defer ReleaseBuffer(buf)
@@ -36,8 +39,30 @@ func TestInterpolateIntoBuffer(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
+
+	// Verify adjacent braces {{{x}}} preserve outer literal braces around the interpolated value.
+	buf.Reset()
+	InterpolateIntoBuffer(buf, "JSON literal: {{{x}}}", map[string]string{"x": "value"})
+	if buf.String() != "JSON literal: {value}" {
+		t.Fatalf("expected {{{x}}} to interpolate as {value}, got %q", buf.String())
+	}
+
+	// Verify missing keys are preserved verbatim rather than silently omitted in InterpolateIntoBuffer,
+	// and reported via ErrMissingVariable in InterpolateIntoBufferChecked.
+	buf.Reset()
+	InterpolateIntoBuffer(buf, "Hello {{present}} and {{missing}}!", map[string]string{"present": "world"})
+	if buf.String() != "Hello world and {{missing}}!" {
+		t.Fatalf("expected missing key token to be preserved, got %q", buf.String())
+	}
+
+	buf.Reset()
+	err := InterpolateIntoBufferChecked(buf, "Hello {{present}} and {{missing}}!", map[string]string{"present": "world"})
+	if !errors.Is(err, ErrMissingVariable) {
+		t.Fatalf("expected ErrMissingVariable from InterpolateIntoBufferChecked, got %v", err)
+	}
 }
 
+// BenchmarkRender50KBContext measures allocation and latency behavior across a 50 KB context payload.
 func BenchmarkRender50KBContext(b *testing.B) {
 	context50KB := strings.Repeat("Enterprise RAG financial context passage segment. ", 1024) // ~50 KB
 	pattern := "<instructions>Analyze the financial filings accurately.</instructions>\n<context>{{context}}</context>\n<query>{{query}}</query>"

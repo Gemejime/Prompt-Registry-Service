@@ -29,6 +29,7 @@ paths:
   /ready:
     get:
       summary: Readiness Probe
+      description: Verifies PostgreSQL pool and Redis cluster reachability. When POSTGRES_DSN is absent (with ALLOW_IN_MEMORY_STORE=true), CheckPostgres reports success without verifying PostgreSQL; a 200 OK response does not confirm PostgreSQL is configured or that storage is durable.
       operationId: getReadiness
       security: []
       responses:

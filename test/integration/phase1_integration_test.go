@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"rag-prompt-registry-service/internal/application/command"
 	"rag-prompt-registry-service/internal/application/query"
@@ -21,29 +24,40 @@ import (
 	"rag-prompt-registry-service/internal/infrastructure/persistence/postgres"
 )
 
-func setupRepositories(t *testing.T) (repository.PromptRepository, repository.AuditRepository, *postgres.TransactionalMemoryStore, func()) {
+// setupRepositories initializes PostgreSQL repositories when POSTGRES_DSN is set (failing the test on any
+// connection, ping, or migration error), or uses TransactionalMemoryStore when POSTGRES_DSN is empty.
+func setupRepositories(t *testing.T) (repository.PromptRepository, repository.AuditRepository, *postgres.TransactionalMemoryStore, *pgxpool.Pool, func()) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
-	if dsn != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		pool, err := postgres.NewPool(ctx, postgres.PoolOptions{
-			DSN:      dsn,
-			MaxConns: 20,
-			MinConns: 2,
-		})
-		if err == nil && pool.Ping(ctx) == nil {
-			if migErr := postgres.ApplyMigrations(ctx, pool); migErr == nil {
-				cancel()
-				return postgres.NewPromptRepository(pool), postgres.NewAuditRepository(pool), nil, func() {
-					pool.Close()
-				}
-			}
-		}
-		cancel()
+	if dsn == "" {
+		mem := postgres.NewTransactionalMemoryStore()
+		return mem, mem, mem, nil, func() {}
 	}
 
-	mem := postgres.NewTransactionalMemoryStore()
-	return mem, mem, mem, func() {}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pool, err := postgres.NewPool(ctx, postgres.PoolOptions{
+		DSN:      dsn,
+		MaxConns: 20,
+		MinConns: 2,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("failed to create postgres pool with POSTGRES_DSN configured: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("failed to ping postgres with POSTGRES_DSN configured: %v", err)
+	}
+	if err := postgres.ApplyMigrations(ctx, pool); err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("failed to apply postgres migrations with POSTGRES_DSN configured: %v", err)
+	}
+	cancel()
+	return postgres.NewPromptRepository(pool), postgres.NewAuditRepository(pool), nil, pool, func() {
+		pool.Close()
+	}
 }
 
 // Scenario 1: PgBouncer Simple Protocol Concurrency & Monotonic Version Serialization (ADR-003)
@@ -60,7 +74,7 @@ func TestPgBouncerSimpleProtocolConcurrency(t *testing.T) {
 		t.Fatalf("ADR-003 violation: expected pgx.QueryExecModeSimpleProtocol, got %v", cfg.ConnConfig.DefaultQueryExecMode)
 	}
 
-	promptRepo, _, _, cleanup := setupRepositories(t)
+	promptRepo, _, _, _, cleanup := setupRepositories(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -155,7 +169,7 @@ func TestPgBouncerSimpleProtocolConcurrency(t *testing.T) {
 
 // Scenario 2: Transactional Audit Ledger Commits, Rollback Atomicity & Append-Only Immutability (ADR-004)
 func TestTransactionalAuditLedgerAtomicityAndImmutability(t *testing.T) {
-	promptRepo, auditRepo, memStore, cleanup := setupRepositories(t)
+	promptRepo, auditRepo, memStore, pgPool, cleanup := setupRepositories(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -203,22 +217,67 @@ func TestTransactionalAuditLedgerAtomicityAndImmutability(t *testing.T) {
 		if _, getErr := promptRepo.GetTemplateVersion(ctx, tenantID, failedName, 1); getErr == nil {
 			t.Fatalf("atomic rollback violation: template %q persisted despite audit ledger failure", failedName)
 		}
+	}
 
-		// Verify append-only immutability trigger error semantics on prompt_versions and prompt_audit_ledger
-		if trigErr := memStore.AttemptAppendOnlyMutation("prompt_versions", "UPDATE"); trigErr == nil ||
-			!strings.Contains(trigErr.Error(), "strictly append-only") {
-			t.Fatalf("expected append-only trigger error on prompt_versions UPDATE, got: %v", trigErr)
+	// When POSTGRES_DSN is configured, exercise PostgreSQL BEFORE UPDATE OR DELETE triggers
+	// on prompt_versions and prompt_audit_ledger and assert SQLSTATE P0001.
+	if pgPool != nil {
+		tmpl, _, err := pubHandler.CreateTemplate(ctx, command.CreateTemplateInput{
+			TenantID: tenantID,
+			Name:     "immutable-trigger-template-" + strings.ToLower(redis.NewULID()[:8]),
+			SchemaID: sc.ID,
+			Author:   "audit-tester",
+			RawAST: entity.TemplateAST{
+				SystemPrompt:   "Immutable version prompt",
+				VariableKeys:   []string{"q"},
+				DefaultDialect: entity.DialectOpenAIStandard,
+				Messages:       []entity.MessageBlock{{Role: "user", ContentPattern: "{{q}}"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateTemplate for trigger verification failed: %v", err)
 		}
-		if trigErr := memStore.AttemptAppendOnlyMutation("prompt_audit_ledger", "DELETE"); trigErr == nil ||
-			!strings.Contains(trigErr.Error(), "strictly append-only") {
-			t.Fatalf("expected append-only trigger error on prompt_audit_ledger DELETE, got: %v", trigErr)
+
+		triggerChecks := []struct {
+			name string
+			sql  string
+			args []any
+		}{
+			{
+				name: "prompt_versions UPDATE",
+				sql:  "UPDATE prompt_versions SET author = 'tampered' WHERE template_id = $1",
+				args: []any{tmpl.ID},
+			},
+			{
+				name: "prompt_versions DELETE",
+				sql:  "DELETE FROM prompt_versions WHERE template_id = $1",
+				args: []any{tmpl.ID},
+			},
+			{
+				name: "prompt_audit_ledger UPDATE",
+				sql:  "UPDATE prompt_audit_ledger SET performed_by = 'tampered' WHERE tenant_id = $1 AND template_id = $2",
+				args: []any{tenantID, tmpl.ID},
+			},
+			{
+				name: "prompt_audit_ledger DELETE",
+				sql:  "DELETE FROM prompt_audit_ledger WHERE tenant_id = $1 AND template_id = $2",
+				args: []any{tenantID, tmpl.ID},
+			},
+		}
+
+		for _, tc := range triggerChecks {
+			_, mutErr := pgPool.Exec(ctx, tc.sql, tc.args...)
+			var pgErr *pgconn.PgError
+			if !errors.As(mutErr, &pgErr) || pgErr.Code != "P0001" {
+				t.Fatalf("expected PostgreSQL trigger error with SQLSTATE P0001 on %s, got: %v", tc.name, mutErr)
+			}
 		}
 	}
 }
 
 // Scenario 3: Redis L2 Cache & Pub/Sub Invalidation Delivery within <100ms (ADR-002)
 func TestRedisL2CacheAndPubSubInvalidationDelivery(t *testing.T) {
-	promptRepo, _, _, cleanup := setupRepositories(t)
+	promptRepo, _, _, _, cleanup := setupRepositories(t)
 	defer cleanup()
 
 	ctx := context.Background()
