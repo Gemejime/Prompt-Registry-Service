@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type ClientOptions struct {
 	DB       int
 }
 
+// memEntry holds an in-memory cache value and its optional expiration timestamp.
 type memEntry struct {
 	payload   []byte
 	expiresAt time.Time
@@ -72,6 +74,7 @@ func NewInMemoryL2Cache() *L2CacheClient {
 	}
 }
 
+// dialNode connects to the first reachable Redis node and performs optional AUTH and SELECT commands.
 func (c *L2CacheClient) dialNode(ctx context.Context) (net.Conn, error) {
 	if c == nil || len(c.addrs) == 0 {
 		return nil, fmt.Errorf("no redis cluster addresses configured")
@@ -103,6 +106,7 @@ func (c *L2CacheClient) dialNode(ctx context.Context) (net.Conn, error) {
 	return nil, lastErr
 }
 
+// execRESP sends a RESP array command over conn and parses the single-line or bulk-string response.
 func execRESP(conn net.Conn, args ...string) (string, error) {
 	_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
 	var sb strings.Builder
@@ -135,7 +139,7 @@ func execRESP(conn net.Conn, args ...string) (string, error) {
 			return "", fmt.Errorf("redis nil bulk string")
 		}
 		buf := make([]byte, length+2)
-		if _, err := reader.Read(buf); err != nil {
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			return "", err
 		}
 		return string(buf[:length]), nil
@@ -181,18 +185,23 @@ func TagCacheKey(tenantID, templateID, tag string) string {
 	return fmt.Sprintf("l2:tenant:%s:template:%s:tag:%s", tenantID, templateID, tag)
 }
 
+// getBytes fetches a cached byte slice from Redis when cluster addresses are configured,
+// or from the in-memory store when running in standalone memory mode.
 func (c *L2CacheClient) getBytes(ctx context.Context, key string) ([]byte, bool) {
 	if c == nil {
 		return nil, false
 	}
 	if len(c.addrs) > 0 {
-		if conn, err := c.dialNode(ctx); err == nil {
-			val, rErr := execRESP(conn, "GET", key)
-			_ = conn.Close()
-			if rErr == nil && val != "" {
-				return []byte(val), true
-			}
+		conn, err := c.dialNode(ctx)
+		if err != nil {
+			return nil, false
 		}
+		val, rErr := execRESP(conn, "GET", key)
+		_ = conn.Close()
+		if rErr != nil || val == "" {
+			return nil, false
+		}
+		return []byte(val), true
 	}
 	c.mu.RLock()
 	entry, ok := c.memData[key]
@@ -209,6 +218,7 @@ func (c *L2CacheClient) getBytes(ctx context.Context, key string) ([]byte, bool)
 	return entry.payload, true
 }
 
+// setBytes stores a byte slice in the cache with the given TTL.
 func (c *L2CacheClient) setBytes(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	if c == nil {
 		return nil
@@ -237,6 +247,42 @@ func (c *L2CacheClient) setBytes(ctx context.Context, key string, val []byte, tt
 	return nil
 }
 
+// setBytesNX stores a byte slice only if the key is currently absent or expired, preventing
+// concurrent stale readers from overwriting a freshly promoted tag resolution.
+func (c *L2CacheClient) setBytesNX(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	if c == nil {
+		return nil
+	}
+	now := time.Now()
+	var exp time.Time
+	if ttl > 0 {
+		exp = now.Add(ttl)
+	}
+	c.mu.Lock()
+	if existing, ok := c.memData[key]; !ok || (!existing.expiresAt.IsZero() && now.After(existing.expiresAt)) {
+		c.memData[key] = memEntry{
+			payload:   append([]byte(nil), val...),
+			expiresAt: exp,
+		}
+	}
+	c.mu.Unlock()
+
+	if len(c.addrs) > 0 {
+		conn, err := c.dialNode(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+		sec := int(ttl.Seconds())
+		if sec <= 0 {
+			sec = 300
+		}
+		_, _ = execRESP(conn, "SET", key, string(val), "EX", strconv.Itoa(sec), "NX")
+	}
+	return nil
+}
+
+// delKey removes a key from the in-memory map and from Redis when cluster addresses are configured.
 func (c *L2CacheClient) delKey(ctx context.Context, key string) error {
 	if c == nil {
 		return nil
@@ -246,14 +292,19 @@ func (c *L2CacheClient) delKey(ctx context.Context, key string) error {
 	c.mu.Unlock()
 
 	if len(c.addrs) > 0 {
-		if conn, err := c.dialNode(ctx); err == nil {
-			_, _ = execRESP(conn, "DEL", key)
-			_ = conn.Close()
+		conn, err := c.dialNode(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := execRESP(conn, "DEL", key); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// publishRemote publishes a message payload to the specified Redis Pub/Sub channel.
 func (c *L2CacheClient) publishRemote(ctx context.Context, channel, payload string) error {
 	if c == nil || len(c.addrs) == 0 {
 		return nil
@@ -330,7 +381,9 @@ func (c *L2CacheClient) GetTagResolution(ctx context.Context, tenantID, template
 	return &ver, true
 }
 
-// SetTagResolution stores a resolved tag pointer target version in L2 with a 5-minute safety TTL.
+// SetTagResolution stores a resolved tag pointer target version in L2 with a 5-minute safety TTL
+// if the tag key is not already populated, preventing stale concurrent readers from overwriting
+// a newly promoted pointer after EvictTagResolution.
 func (c *L2CacheClient) SetTagResolution(ctx context.Context, tenantID, templateID, tag string, ver *entity.PromptVersion) error {
 	if c == nil || ver == nil {
 		return nil
@@ -339,7 +392,7 @@ func (c *L2CacheClient) SetTagResolution(ctx context.Context, tenantID, template
 	if err != nil {
 		return err
 	}
-	return c.setBytes(ctx, TagCacheKey(tenantID, templateID, tag), raw, defaultTagTTL)
+	return c.setBytesNX(ctx, TagCacheKey(tenantID, templateID, tag), raw, defaultTagTTL)
 }
 
 // EvictTagResolution immediately removes a stale tag pointer entry from L2 upon tag promotion.

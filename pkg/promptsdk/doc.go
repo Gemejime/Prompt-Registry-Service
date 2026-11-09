@@ -8,8 +8,13 @@ package promptsdk
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 )
+
+// ErrMissingVariable is returned by InterpolateIntoBufferChecked when a placeholder key is absent from vars.
+var ErrMissingVariable = errors.New("missing template variable")
 
 // DialectType represents the target model dialect for AST adaptation.
 type DialectType string
@@ -68,7 +73,21 @@ func ReleaseBuffer(buf *bytes.Buffer) {
 }
 
 // InterpolateIntoBuffer binds {{variable}} placeholders from pattern into dst without heap allocations.
+// Adjacent braces such as {{{x}}} treat outer braces as literals surrounding the innermost {{x}} placeholder
+// (producing "{<val>}"). When a key is absent from vars, the raw {{key}} token is preserved in dst rather than
+// silently omitted; callers that require an error on missing keys should use InterpolateIntoBufferChecked.
 func InterpolateIntoBuffer(dst *bytes.Buffer, pattern string, vars map[string]string) {
+	_ = interpolateBuffer(dst, pattern, vars, false)
+}
+
+// InterpolateIntoBufferChecked binds {{variable}} placeholders from pattern into dst and returns
+// an error wrapping ErrMissingVariable if any placeholder key is not present in vars.
+func InterpolateIntoBufferChecked(dst *bytes.Buffer, pattern string, vars map[string]string) error {
+	return interpolateBuffer(dst, pattern, vars, true)
+}
+
+// interpolateBuffer implements the shared scanner for InterpolateIntoBuffer and InterpolateIntoBufferChecked.
+func interpolateBuffer(dst *bytes.Buffer, pattern string, vars map[string]string, strictMissing bool) error {
 	n := len(pattern)
 	i := 0
 	for i < n {
@@ -84,25 +103,41 @@ func InterpolateIntoBuffer(dst *bytes.Buffer, pattern string, vars map[string]st
 			dst.WriteString(pattern[i:])
 			break
 		}
-		if openIdx > i {
-			dst.WriteString(pattern[i:openIdx])
-		}
-		afterOpen := openIdx + 2
+
+		// Scan for '}}' starting after the initial '{{'
 		closeIdx := -1
-		for j := afterOpen; j+1 < n; j++ {
+		for j := openIdx + 2; j+1 < n; j++ {
 			if pattern[j] == '}' && pattern[j+1] == '}' {
 				closeIdx = j
 				break
 			}
 		}
 		if closeIdx == -1 {
-			dst.WriteString(pattern[openIdx:])
+			dst.WriteString(pattern[i:])
 			break
 		}
+
+		// Advance openIdx across any adjacent or nested '{{' before closeIdx so {{{x}}} binds the innermost {{x}}.
+		for j := openIdx + 1; j+1 < closeIdx; j++ {
+			if pattern[j] == '{' && pattern[j+1] == '{' {
+				openIdx = j
+			}
+		}
+
+		if openIdx > i {
+			dst.WriteString(pattern[i:openIdx])
+		}
+		afterOpen := openIdx + 2
 		key := pattern[afterOpen:closeIdx]
 		if val, ok := vars[key]; ok {
 			dst.WriteString(val)
+		} else {
+			dst.WriteString(pattern[openIdx : closeIdx+2])
+			if strictMissing {
+				return fmt.Errorf("%w: %q", ErrMissingVariable, key)
+			}
 		}
 		i = closeIdx + 2
 	}
+	return nil
 }

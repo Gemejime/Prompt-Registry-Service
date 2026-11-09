@@ -6,7 +6,10 @@ package http
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,9 +32,49 @@ import (
 // MaxHTTPBodyBytes enforces a 1 MiB ceiling on HTTP request payloads to protect the <=128 MiB RSS footprint.
 const MaxHTTPBodyBytes = 1 << 20
 
+// DefaultJWTSecret and DefaultJWTIssuer provide the default HMAC-SHA256 signing parameters when not overridden via environment.
+const (
+	DefaultJWTSecret      = "rag-prompt-registry-default-jwt-hmac-secret"
+	DefaultJWTIssuer      = "rag-prompt-registry-auth"
+	idempotencyTTL        = 15 * time.Minute
+	maxIdempotencyEntries = 1024
+)
+
+// tenantContextKeyType is the context key type for storing the verified caller tenant ID.
 type tenantContextKeyType struct{}
 
 var httpTenantContextKey = tenantContextKeyType{}
+
+// IssueHS256JWT signs a bearer JWT token with HMAC-SHA256 for the given tenant, issuer, secret, and TTL.
+func IssueHS256JWT(tenantID, issuer, secret string, ttl time.Duration) (string, error) {
+	if strings.TrimSpace(secret) == "" {
+		secret = DefaultJWTSecret
+	}
+	if strings.TrimSpace(issuer) == "" {
+		issuer = DefaultJWTIssuer
+	}
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	headerJSON := `{"alg":"HS256","typ":"JWT"}`
+	now := time.Now().UTC().Unix()
+	claims := map[string]any{
+		"tenant_id": strings.TrimSpace(tenantID),
+		"iss":       strings.TrimSpace(issuer),
+		"iat":       now,
+		"exp":       now + int64(ttl.Seconds()),
+	}
+	claimsBytes, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString([]byte(headerJSON)) + "." +
+		base64.RawURLEncoding.EncodeToString(claimsBytes)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(unsigned))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return unsigned + "." + sig, nil
+}
 
 // ReadinessChecker verifies connectivity to PostgreSQL and Redis for the /ready endpoint.
 type ReadinessChecker interface {
@@ -55,12 +98,17 @@ type RouterConfig struct {
 	Logger         *slog.Logger
 }
 
+// cachedIdempotentResponse stores the state and payload fingerprint of an idempotent mutation.
 type cachedIdempotentResponse struct {
 	statusCode int
 	body       []byte
+	bodyHash   string
 	storedAt   time.Time
+	inFlight   bool
+	done       chan struct{}
 }
 
+// tokenBucketLimiter implements a thread-safe token bucket rate limiter for administrative writes.
 type tokenBucketLimiter struct {
 	mu         sync.Mutex
 	tokens     float64
@@ -69,6 +117,7 @@ type tokenBucketLimiter struct {
 	lastRefill time.Time
 }
 
+// newTokenBucketLimiter initializes a tokenBucketLimiter with the given refill rate and burst capacity.
 func newTokenBucketLimiter(rps float64, burst int) *tokenBucketLimiter {
 	if rps <= 0 {
 		rps = 100
@@ -84,6 +133,7 @@ func newTokenBucketLimiter(rps float64, burst int) *tokenBucketLimiter {
 	}
 }
 
+// allow consumes one token if available and reports whether the request is permitted.
 func (l *tokenBucketLimiter) allow() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -134,6 +184,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.handler.ServeHTTP(w, req)
 }
 
+// registerRoutes binds all public documentation, probe, and administrative REST endpoints to r.mux.
 func (r *Router) registerRoutes() {
 	// Documentation & Probe API Endpoints (OpenAPI 3.1)
 	r.mux.HandleFunc("GET /docs", r.handleSwaggerUI)
@@ -156,6 +207,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("GET /v1/schemas/{id}", r.handleGetSchema)
 }
 
+// statusRecorder wraps http.ResponseWriter to capture the HTTP status code and optional response body.
 type statusRecorder struct {
 	http.ResponseWriter
 	statusCode int
@@ -163,11 +215,13 @@ type statusRecorder struct {
 	capture    bool
 }
 
+// WriteHeader records the HTTP response status code and forwards it to the underlying ResponseWriter.
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.statusCode = code
 	sr.ResponseWriter.WriteHeader(code)
 }
 
+// Write optionally buffers the response body for idempotency replay and writes to the underlying ResponseWriter.
 func (sr *statusRecorder) Write(b []byte) (int, error) {
 	if sr.capture {
 		sr.buf.Write(b)
@@ -175,6 +229,34 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 	return sr.ResponseWriter.Write(b)
 }
 
+// pruneIdempotencyLocked removes expired entries and enforces maxIdempotencyEntries while r.idempotencyMu is held.
+func (r *Router) pruneIdempotencyLocked(now time.Time) {
+	for k, v := range r.idempotencyData {
+		if !v.inFlight && now.Sub(v.storedAt) >= idempotencyTTL {
+			delete(r.idempotencyData, k)
+		}
+	}
+	for len(r.idempotencyData) >= maxIdempotencyEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range r.idempotencyData {
+			if v.inFlight {
+				continue
+			}
+			if oldestKey == "" || v.storedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.storedAt
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(r.idempotencyData, oldestKey)
+	}
+}
+
+// withMiddleware wraps next with correlation tracing, verified JWT tenant extraction, panic recovery,
+// payload size limits, rate limiting, and bounded idempotency-key reservation.
 func (r *Router) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
@@ -192,11 +274,8 @@ func (r *Router) withMiddleware(next http.Handler) http.Handler {
 
 		ctx := command.WithTraceID(req.Context(), traceID)
 
-		// 2. Tenant Extraction from X-Tenant-ID or JWT claims
-		callerTenant := strings.TrimSpace(req.Header.Get("X-Tenant-ID"))
-		if callerTenant == "" {
-			callerTenant = extractTenantFromJWTHeader(req.Header.Get("Authorization"))
-		}
+		// 2. Verified Tenant Extraction from Bearer JWT claims
+		callerTenant := extractTenantFromJWTHeader(req.Header.Get("Authorization"))
 		if callerTenant != "" {
 			ctx = context.WithValue(ctx, httpTenantContextKey, callerTenant)
 		}
@@ -227,18 +306,76 @@ func (r *Router) withMiddleware(next http.Handler) http.Handler {
 		}
 
 		idempKey := strings.TrimSpace(req.Header.Get("Idempotency-Key"))
-		var scopedIdempKey string
+		var (
+			scopedIdempKey string
+			bodyHash       string
+			reservedDone   chan struct{}
+		)
 		if isWrite && idempKey != "" {
-			scopedIdempKey = fmt.Sprintf("%s|%s|%s|%s", callerTenant, req.Method, req.URL.Path, idempKey)
-			r.idempotencyMu.RLock()
-			cached, ok := r.idempotencyData[scopedIdempKey]
-			r.idempotencyMu.RUnlock()
-			if ok && time.Since(cached.storedAt) < 15*time.Minute {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("X-Idempotent-Replay", "true")
-				w.WriteHeader(cached.statusCode)
-				_, _ = w.Write(cached.body)
+			var bodyBytes []byte
+			if req.Body != nil {
+				var readErr error
+				bodyBytes, readErr = io.ReadAll(req.Body)
+				if readErr != nil {
+					handleDomainError(w, readErr)
+					return
+				}
+				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+			sum := sha256.Sum256(bytes.TrimSpace(bodyBytes))
+			bodyHash = hex.EncodeToString(sum[:])
+
+			var bodyPeek struct {
+				TenantID string `json:"tenant_id"`
+			}
+			_ = json.Unmarshal(bodyBytes, &bodyPeek)
+
+			canonicalTenant, tenantErr := r.resolveTenant(req, bodyPeek.TenantID)
+			if tenantErr != nil {
+				handleDomainError(w, tenantErr)
 				return
+			}
+
+			scopedIdempKey = fmt.Sprintf("%s|%s|%s|%s", canonicalTenant, req.Method, req.URL.Path, idempKey)
+
+			for {
+				now := time.Now()
+				r.idempotencyMu.Lock()
+				r.pruneIdempotencyLocked(now)
+				existing, ok := r.idempotencyData[scopedIdempKey]
+				if ok {
+					if existing.bodyHash != bodyHash {
+						r.idempotencyMu.Unlock()
+						writeErrorJSON(w, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_CONFLICT", "Idempotency-Key cannot be reused with a different request payload", nil)
+						return
+					}
+					if existing.inFlight {
+						waitCh := existing.done
+						r.idempotencyMu.Unlock()
+						select {
+						case <-waitCh:
+							continue
+						case <-req.Context().Done():
+							return
+						}
+					}
+					r.idempotencyMu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("X-Idempotent-Replay", "true")
+					w.WriteHeader(existing.statusCode)
+					_, _ = w.Write(existing.body)
+					return
+				}
+
+				reservedDone = make(chan struct{})
+				r.idempotencyData[scopedIdempKey] = cachedIdempotentResponse{
+					bodyHash: bodyHash,
+					storedAt: now,
+					inFlight: true,
+					done:     reservedDone,
+				}
+				r.idempotencyMu.Unlock()
+				break
 			}
 		}
 
@@ -248,17 +385,29 @@ func (r *Router) withMiddleware(next http.Handler) http.Handler {
 			capture:        scopedIdempKey != "",
 		}
 
-		next.ServeHTTP(rec, req)
-
-		if scopedIdempKey != "" && rec.statusCode >= 200 && rec.statusCode < 300 {
-			r.idempotencyMu.Lock()
-			r.idempotencyData[scopedIdempKey] = cachedIdempotentResponse{
-				statusCode: rec.statusCode,
-				body:       append([]byte(nil), rec.buf.Bytes()...),
-				storedAt:   time.Now(),
-			}
-			r.idempotencyMu.Unlock()
+		if reservedDone != nil {
+			defer func() {
+				r.idempotencyMu.Lock()
+				if cur, exists := r.idempotencyData[scopedIdempKey]; exists && cur.inFlight && cur.done == reservedDone {
+					if rec.statusCode >= 200 && rec.statusCode < 300 {
+						r.idempotencyData[scopedIdempKey] = cachedIdempotentResponse{
+							statusCode: rec.statusCode,
+							body:       append([]byte(nil), rec.buf.Bytes()...),
+							bodyHash:   bodyHash,
+							storedAt:   time.Now(),
+							inFlight:   false,
+							done:       reservedDone,
+						}
+					} else {
+						delete(r.idempotencyData, scopedIdempKey)
+					}
+				}
+				close(reservedDone)
+				r.idempotencyMu.Unlock()
+			}()
 		}
+
+		next.ServeHTTP(rec, req)
 
 		r.cfg.Logger.InfoContext(ctx, "http request processed",
 			slog.String("trace_id", traceID),
@@ -271,53 +420,108 @@ func (r *Router) withMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// extractTenantFromJWTHeader verifies the Bearer JWT's HS256 signature, issuer, and expiry before returning tenant_id.
 func extractTenantFromJWTHeader(headerVal string) string {
 	parts := strings.SplitN(strings.TrimSpace(headerVal), " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return ""
 	}
 	segments := strings.Split(strings.TrimSpace(parts[1]), ".")
-	if len(segments) < 2 {
+	if len(segments) != 3 {
 		return ""
 	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(segments[0])
+	if err != nil {
+		return ""
+	}
+	var hdr struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil || hdr.Alg != "HS256" {
+		return ""
+	}
+
+	secret := strings.TrimSpace(os.Getenv("JWT_HMAC_SECRET"))
+	if secret == "" {
+		secret = DefaultJWTSecret
+	}
+	expectedIssuer := strings.TrimSpace(os.Getenv("JWT_ISSUER"))
+	if expectedIssuer == "" {
+		expectedIssuer = DefaultJWTIssuer
+	}
+
+	sigBytes, err := base64.RawURLEncoding.DecodeString(segments[2])
+	if err != nil {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(segments[0] + "." + segments[1]))
+	if !hmac.Equal(sigBytes, mac.Sum(nil)) {
+		return ""
+	}
+
 	decoded, err := base64.RawURLEncoding.DecodeString(segments[1])
 	if err != nil {
 		return ""
 	}
-	var claims map[string]any
+	var claims struct {
+		TenantID string  `json:"tenant_id"`
+		Iss      string  `json:"iss"`
+		Exp      float64 `json:"exp"`
+		Nbf      float64 `json:"nbf"`
+	}
 	if err := json.Unmarshal(decoded, &claims); err != nil {
 		return ""
 	}
-	if tid, ok := claims["tenant_id"].(string); ok {
-		return strings.TrimSpace(tid)
+	if strings.TrimSpace(claims.Iss) != expectedIssuer {
+		return ""
 	}
-	return ""
+	now := time.Now().UTC().Unix()
+	if claims.Exp <= 0 || now >= int64(claims.Exp) {
+		return ""
+	}
+	if claims.Nbf > 0 && now < int64(claims.Nbf) {
+		return ""
+	}
+	tid := strings.TrimSpace(claims.TenantID)
+	if !entity.IsValidUUID(tid) {
+		return ""
+	}
+	return tid
 }
 
+// resolveTenant validates that administrative requests carry a verified JWT tenant claim and that any
+// tenant_id supplied via X-Tenant-ID header, query string, or JSON body matches that claim.
 func (r *Router) resolveTenant(req *http.Request, bodyTenant string) (string, error) {
-	bodyTenant = strings.TrimSpace(bodyTenant)
-	headerTenant, _ := req.Context().Value(httpTenantContextKey).(string)
-	headerTenant = strings.TrimSpace(headerTenant)
-	if headerTenant == "" {
-		headerTenant = strings.TrimSpace(req.URL.Query().Get("tenant_id"))
+	authTenant, _ := req.Context().Value(httpTenantContextKey).(string)
+	authTenant = strings.TrimSpace(authTenant)
+	if authTenant == "" {
+		return "", errUnauthenticated
 	}
 
-	if headerTenant != "" && bodyTenant != "" && !strings.EqualFold(headerTenant, bodyTenant) {
+	headerTenant := strings.TrimSpace(req.Header.Get("X-Tenant-ID"))
+	if headerTenant != "" && !strings.EqualFold(headerTenant, authTenant) {
 		return "", errCrossTenantForbidden
 	}
-	if bodyTenant != "" {
-		return bodyTenant, nil
+
+	queryTenant := strings.TrimSpace(req.URL.Query().Get("tenant_id"))
+	if queryTenant != "" && !strings.EqualFold(queryTenant, authTenant) {
+		return "", errCrossTenantForbidden
 	}
-	if headerTenant != "" {
-		return headerTenant, nil
+
+	bodyTenant = strings.TrimSpace(bodyTenant)
+	if bodyTenant != "" && !strings.EqualFold(bodyTenant, authTenant) {
+		return "", errCrossTenantForbidden
 	}
-	if r.cfg.DefaultTenant != "" {
-		return r.cfg.DefaultTenant, nil
-	}
-	return "", fmt.Errorf("%w: tenant_id is required", entity.ErrInvalidInput)
+
+	return authTenant, nil
 }
 
-var errCrossTenantForbidden = errors.New("cross-tenant access forbidden")
+var (
+	errUnauthenticated      = errors.New("valid bearer token with verified tenant_id claim is required")
+	errCrossTenantForbidden = errors.New("cross-tenant access forbidden")
+)
 
 // ErrorResponse matches #/components/schemas/ErrorResponse in openapi/openapi.yaml.
 type ErrorResponse struct {
@@ -326,12 +530,14 @@ type ErrorResponse struct {
 	Details []string `json:"details,omitempty"`
 }
 
+// writeJSON serializes payload as application/json with the given HTTP status code.
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// writeErrorJSON writes a standardized ErrorResponse JSON payload.
 func writeErrorJSON(w http.ResponseWriter, statusCode int, code, message string, details []string) {
 	writeJSON(w, statusCode, ErrorResponse{
 		Code:    code,
@@ -340,6 +546,7 @@ func writeErrorJSON(w http.ResponseWriter, statusCode int, code, message string,
 	})
 }
 
+// handleDomainError maps domain and authentication errors to their corresponding HTTP status codes.
 func handleDomainError(w http.ResponseWriter, err error) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
@@ -347,6 +554,8 @@ func handleDomainError(w http.ResponseWriter, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, errUnauthenticated):
+		writeErrorJSON(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error(), nil)
 	case errors.Is(err, errCrossTenantForbidden):
 		writeErrorJSON(w, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 	case errors.Is(err, entity.ErrInvalidInput):
@@ -362,6 +571,7 @@ func handleDomainError(w http.ResponseWriter, err error) {
 	}
 }
 
+// decodeJSONBody reads and unmarshals the HTTP request JSON body into dst.
 func decodeJSONBody(req *http.Request, dst any) error {
 	if req.Body == nil {
 		return fmt.Errorf("%w: request body is empty", entity.ErrInvalidInput)
@@ -385,6 +595,7 @@ func decodeJSONBody(req *http.Request, dst any) error {
 
 // --- Doc API & Probe Handlers ---
 
+// handleSwaggerUI serves the interactive Swagger UI HTML page for the OpenAPI 3.1 contract.
 func (r *Router) handleSwaggerUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -407,6 +618,7 @@ func (r *Router) handleSwaggerUI(w http.ResponseWriter, _ *http.Request) {
 </html>`))
 }
 
+// handleReDocUI serves the interactive ReDoc HTML page for the OpenAPI 3.1 contract.
 func (r *Router) handleReDocUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -423,6 +635,7 @@ func (r *Router) handleReDocUI(w http.ResponseWriter, _ *http.Request) {
 </html>`))
 }
 
+// handleOpenAPISpec serves the raw machine-readable OpenAPI 3.1 YAML specification.
 func (r *Router) handleOpenAPISpec(w http.ResponseWriter, _ *http.Request) {
 	candidates := []string{
 		r.cfg.OpenAPIPath,
@@ -445,10 +658,12 @@ func (r *Router) handleOpenAPISpec(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("openapi: 3.1.0\ninfo:\n  title: RAG Prompt Registry Service API\n  version: 1.0.0\n"))
 }
 
+// handleHealthz serves the liveness probe endpoint (/healthz).
 func (r *Router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
 }
 
+// handleReady serves the readiness probe endpoint (/ready), checking PostgreSQL and Redis reachability.
 func (r *Router) handleReady(w http.ResponseWriter, req *http.Request) {
 	if r.cfg.Readiness != nil {
 		if err := r.cfg.Readiness.CheckPostgres(req.Context()); err != nil {
@@ -467,6 +682,7 @@ func (r *Router) handleReady(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// handleMetrics serves measured control plane Prometheus metrics on /metrics.
 func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	var sb strings.Builder
 	sb.WriteString("# HELP prompt_registry_mutation_duration_seconds Control plane write latencies\n")
@@ -491,19 +707,6 @@ func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	sb.WriteString(fmt.Sprintf("prompt_invalidation_events_published_total{status=\"success\"} %d\n", pubSuccess))
 	sb.WriteString(fmt.Sprintf("prompt_invalidation_events_published_total{status=\"error\"} %d\n", pubErr))
 
-	sb.WriteString("# HELP prompt_sdk_render_duration_seconds SDK in-process compilation latency\n")
-	sb.WriteString("# TYPE prompt_sdk_render_duration_seconds histogram\n")
-	sb.WriteString("prompt_sdk_render_duration_seconds_count{dialect=\"DIALECT_ANTHROPIC_XML\",status=\"success\"} 0\n")
-
-	sb.WriteString("# HELP prompt_sdk_cache_hit_ratio Local SDK memory hit ratio\n")
-	sb.WriteString("# TYPE prompt_sdk_cache_hit_ratio gauge\n")
-	sb.WriteString("prompt_sdk_cache_hit_ratio{tier=\"L1_version\"} 1\n")
-	sb.WriteString("prompt_sdk_cache_hit_ratio{tier=\"L1_tag\"} 1\n")
-
-	sb.WriteString("# HELP prompt_sdk_pubsub_connected Orchestrator Pub/Sub connection status\n")
-	sb.WriteString("# TYPE prompt_sdk_pubsub_connected gauge\n")
-	sb.WriteString("prompt_sdk_pubsub_connected{node_id=\"control-plane\"} 1\n")
-
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(sb.String()))
@@ -511,6 +714,7 @@ func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 // --- Administrative REST API Payloads & Handlers ---
 
+// createTemplateHTTPRequest represents the JSON payload for POST /v1/templates.
 type createTemplateHTTPRequest struct {
 	TenantID    string             `json:"tenant_id"`
 	Name        string             `json:"name"`
@@ -520,6 +724,7 @@ type createTemplateHTTPRequest struct {
 	Author      string             `json:"author"`
 }
 
+// templateHTTPResponse represents the JSON response for a prompt template aggregate root.
 type templateHTTPResponse struct {
 	ID             string `json:"id"`
 	TenantID       string `json:"tenant_id"`
@@ -530,6 +735,7 @@ type templateHTTPResponse struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+// toTemplateHTTPResponse converts an entity.PromptTemplate into a templateHTTPResponse.
 func toTemplateHTTPResponse(t entity.PromptTemplate) templateHTTPResponse {
 	return templateHTTPResponse{
 		ID:             t.ID,
@@ -542,6 +748,7 @@ func toTemplateHTTPResponse(t entity.PromptTemplate) templateHTTPResponse {
 	}
 }
 
+// handleCreateTemplate handles POST /v1/templates.
 func (r *Router) handleCreateTemplate(w http.ResponseWriter, req *http.Request) {
 	var body createTemplateHTTPRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -568,11 +775,13 @@ func (r *Router) handleCreateTemplate(w http.ResponseWriter, req *http.Request) 
 	writeJSON(w, http.StatusCreated, toTemplateHTTPResponse(*tmpl))
 }
 
+// listTemplatesHTTPResponse represents the JSON response for GET /v1/templates.
 type listTemplatesHTTPResponse struct {
 	Templates  []templateHTTPResponse `json:"templates"`
 	NextCursor string                 `json:"next_cursor,omitempty"`
 }
 
+// handleListTemplates handles GET /v1/templates.
 func (r *Router) handleListTemplates(w http.ResponseWriter, req *http.Request) {
 	tenantID, err := r.resolveTenant(req, "")
 	if err != nil {
@@ -604,18 +813,21 @@ func (r *Router) handleListTemplates(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// publishVersionHTTPRequest represents the JSON payload for POST /v1/templates/{id}/versions.
 type publishVersionHTTPRequest struct {
 	RawAST   entity.TemplateAST `json:"raw_ast"`
 	SchemaID string             `json:"schema_id"`
 	Author   string             `json:"author"`
 }
 
+// versionHTTPResponse represents the JSON response for POST /v1/templates/{id}/versions.
 type versionHTTPResponse struct {
 	TemplateID string `json:"template_id"`
 	Version    int    `json:"version"`
 	CreatedAt  string `json:"created_at"`
 }
 
+// handlePublishVersion handles POST /v1/templates/{id}/versions.
 func (r *Router) handlePublishVersion(w http.ResponseWriter, req *http.Request) {
 	templateID := req.PathValue("id")
 	var body publishVersionHTTPRequest
@@ -646,6 +858,7 @@ func (r *Router) handlePublishVersion(w http.ResponseWriter, req *http.Request) 
 	})
 }
 
+// versionDetailHTTPResponse represents the JSON response for GET /v1/templates/{id}/versions/{version}.
 type versionDetailHTTPResponse struct {
 	TemplateID string             `json:"template_id"`
 	Version    int                `json:"version"`
@@ -655,6 +868,7 @@ type versionDetailHTTPResponse struct {
 	CreatedAt  string             `json:"created_at"`
 }
 
+// handleGetTemplateVersion handles GET /v1/templates/{id}/versions/{version}.
 func (r *Router) handleGetTemplateVersion(w http.ResponseWriter, req *http.Request) {
 	templateID := req.PathValue("id")
 	verStr := req.PathValue("version")
@@ -683,12 +897,14 @@ func (r *Router) handleGetTemplateVersion(w http.ResponseWriter, req *http.Reque
 	})
 }
 
+// promoteTagHTTPRequest represents the JSON payload for PUT /v1/templates/{id}/tags/{tag}.
 type promoteTagHTTPRequest struct {
 	TargetVersion   int    `json:"target_version"`
 	ExpectedVersion *int   `json:"expected_version"`
 	UpdatedBy       string `json:"updated_by"`
 }
 
+// promoteTagHTTPResponse represents the JSON response for PUT /v1/templates/{id}/tags/{tag}.
 type promoteTagHTTPResponse struct {
 	TemplateID       string `json:"template_id"`
 	Tag              string `json:"tag"`
@@ -696,6 +912,7 @@ type promoteTagHTTPResponse struct {
 	BroadcastEmitted bool   `json:"broadcast_emitted"`
 }
 
+// handlePromoteTag handles PUT /v1/templates/{id}/tags/{tag}.
 func (r *Router) handlePromoteTag(w http.ResponseWriter, req *http.Request) {
 	templateID := req.PathValue("id")
 	tag := req.PathValue("tag")
@@ -733,6 +950,7 @@ func (r *Router) handlePromoteTag(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// resolveTagHTTPResponse represents the JSON response for GET /v1/templates/{id}/tags/{tag}.
 type resolveTagHTTPResponse struct {
 	TemplateID string             `json:"template_id"`
 	Tag        string             `json:"tag"`
@@ -740,6 +958,7 @@ type resolveTagHTTPResponse struct {
 	AST        entity.TemplateAST `json:"ast"`
 }
 
+// handleResolveTag handles GET /v1/templates/{id}/tags/{tag}.
 func (r *Router) handleResolveTag(w http.ResponseWriter, req *http.Request) {
 	templateID := req.PathValue("id")
 	tag := req.PathValue("tag")
@@ -761,16 +980,19 @@ func (r *Router) handleResolveTag(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// registerSchemaHTTPRequest represents the JSON payload for POST /v1/schemas.
 type registerSchemaHTTPRequest struct {
 	TenantID   string          `json:"tenant_id"`
 	Name       string          `json:"name"`
 	JSONSchema json.RawMessage `json:"json_schema"`
 }
 
+// registerSchemaHTTPResponse represents the JSON response for POST /v1/schemas.
 type registerSchemaHTTPResponse struct {
 	SchemaID string `json:"schema_id"`
 }
 
+// handleRegisterSchema handles POST /v1/schemas.
 func (r *Router) handleRegisterSchema(w http.ResponseWriter, req *http.Request) {
 	var body registerSchemaHTTPRequest
 	if err := decodeJSONBody(req, &body); err != nil {
@@ -797,6 +1019,7 @@ func (r *Router) handleRegisterSchema(w http.ResponseWriter, req *http.Request) 
 	})
 }
 
+// schemaHTTPResponse represents a registered JSON output schema contract.
 type schemaHTTPResponse struct {
 	ID         string          `json:"id"`
 	TenantID   string          `json:"tenant_id"`
@@ -805,11 +1028,13 @@ type schemaHTTPResponse struct {
 	CreatedAt  string          `json:"created_at"`
 }
 
+// listSchemasHTTPResponse represents the JSON response for GET /v1/schemas.
 type listSchemasHTTPResponse struct {
 	Schemas    []schemaHTTPResponse `json:"schemas"`
 	NextCursor string               `json:"next_cursor,omitempty"`
 }
 
+// handleListSchemas handles GET /v1/schemas.
 func (r *Router) handleListSchemas(w http.ResponseWriter, req *http.Request) {
 	tenantID, err := r.resolveTenant(req, "")
 	if err != nil {
@@ -847,6 +1072,7 @@ func (r *Router) handleListSchemas(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// handleGetSchema handles GET /v1/schemas/{id}.
 func (r *Router) handleGetSchema(w http.ResponseWriter, req *http.Request) {
 	schemaID := req.PathValue("id")
 	tenantID, err := r.resolveTenant(req, "")

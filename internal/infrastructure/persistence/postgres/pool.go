@@ -85,13 +85,15 @@ func NewPool(ctx context.Context, opts PoolOptions) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// ApplyMigrations executes the embedded 000001_init_schema.up.sql migration script.
+// ApplyMigrations executes the embedded 000001_init_schema.up.sql migration script
+// under a transaction-scoped PostgreSQL advisory lock to serialize concurrent callers.
 func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	ddl, err := migrations.InitSchemaUp()
 	if err != nil {
 		return err
 	}
-	if _, err := pool.Exec(ctx, ddl); err != nil {
+	const migrationAdvisoryLockSQL = "SELECT pg_advisory_xact_lock(74839201);\n"
+	if _, err := pool.Exec(ctx, migrationAdvisoryLockSQL+ddl); err != nil {
 		return fmt.Errorf("failed to apply schema migration: %w", err)
 	}
 	return nil

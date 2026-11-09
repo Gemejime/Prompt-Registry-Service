@@ -49,7 +49,7 @@ func insertAuditEntryTx(ctx context.Context, tx pgx.Tx, entry entity.AuditEntry)
 		entry.Version,
 		tagPtr,
 		entry.PerformedBy,
-		snapshotBytes,
+		string(snapshotBytes),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert audit ledger entry: %w", err)

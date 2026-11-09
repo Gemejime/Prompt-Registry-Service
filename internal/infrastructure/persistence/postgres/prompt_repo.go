@@ -27,6 +27,7 @@ func NewPromptRepository(pool *pgxpool.Pool) *PostgresPromptRepository {
 	return &PostgresPromptRepository{pool: pool}
 }
 
+// isUniqueViolation reports whether err is a PostgreSQL 23505 unique constraint violation.
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -117,7 +118,7 @@ func (r *PostgresPromptRepository) CreateTemplate(ctx context.Context, params re
 		RETURNING id::text, template_id::text, version, schema_id::text, author, created_at
 	`
 	var ver entity.PromptVersion
-	if err := tx.QueryRow(ctx, insertVersionSQL, tmpl.ID, astBytes, params.ASTHash, params.SchemaID, params.Author).Scan(
+	if err := tx.QueryRow(ctx, insertVersionSQL, tmpl.ID, string(astBytes), params.ASTHash, params.SchemaID, params.Author).Scan(
 		&ver.ID,
 		&ver.TemplateID,
 		&ver.Version,
@@ -223,7 +224,7 @@ func (r *PostgresPromptRepository) PublishVersion(ctx context.Context, params re
 		RETURNING id::text, template_id::text, version, schema_id::text, author, created_at
 	`
 	var ver entity.PromptVersion
-	if err := tx.QueryRow(ctx, insertVersionSQL, templateID, nextVersion, astBytes, params.ASTHash, params.SchemaID, params.Author).Scan(
+	if err := tx.QueryRow(ctx, insertVersionSQL, templateID, nextVersion, string(astBytes), params.ASTHash, params.SchemaID, params.Author).Scan(
 		&ver.ID,
 		&ver.TemplateID,
 		&ver.Version,
@@ -554,7 +555,7 @@ func (r *PostgresPromptRepository) RegisterSchema(ctx context.Context, params re
 	`
 	var s entity.JSONSchema
 	var rawBytes []byte
-	if err := tx.QueryRow(ctx, insertSQL, params.TenantID, params.Name, params.SchemaJSON).Scan(
+	if err := tx.QueryRow(ctx, insertSQL, params.TenantID, params.Name, string(params.SchemaJSON)).Scan(
 		&s.ID,
 		&s.TenantID,
 		&s.Name,

@@ -118,16 +118,11 @@ func (b *PubSubInvalidationBroadcaster) PublishTagInvalidation(ctx context.Conte
 	}
 	payloadStr := string(payloadBytes)
 
+	var remoteErr error
 	if b.client != nil {
 		if len(b.client.addrs) > 0 {
 			if err := b.client.publishRemote(ctx, b.channel, payloadStr); err != nil {
-				b.client.mu.RLock()
-				localSubs := len(b.client.subs[b.channel])
-				b.client.mu.RUnlock()
-				if localSubs == 0 {
-					b.errorCount.Add(1)
-					return evt, fmt.Errorf("failed to publish invalidation event to redis: %w", err)
-				}
+				remoteErr = err
 			}
 		}
 
@@ -140,6 +135,11 @@ func (b *PubSubInvalidationBroadcaster) PublishTagInvalidation(ctx context.Conte
 			default:
 			}
 		}
+	}
+
+	if remoteErr != nil {
+		b.errorCount.Add(1)
+		return evt, fmt.Errorf("failed to publish invalidation event to redis: %w", remoteErr)
 	}
 
 	b.successCount.Add(1)

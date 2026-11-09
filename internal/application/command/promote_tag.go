@@ -109,7 +109,35 @@ func (h *PromoteTagHandler) PromoteTag(ctx context.Context, in PromoteTagInput) 
 	}
 
 	if h.l2Cache != nil {
-		_ = h.l2Cache.EvictTagResolution(ctx, in.TenantID, tagEntity.TemplateID, tagEntity.Tag)
+		var promotedVer *entity.PromptVersion
+		if cachedVer, ok := h.l2Cache.GetVersion(ctx, in.TenantID, tagEntity.TemplateID, tagEntity.TargetVersion); ok {
+			promotedVer = cachedVer
+		} else if repoVer, verErr := h.repo.GetTemplateVersion(ctx, in.TenantID, tagEntity.TemplateID, tagEntity.TargetVersion); verErr == nil {
+			promotedVer = repoVer
+			_ = h.l2Cache.SetVersion(ctx, in.TenantID, promotedVer)
+		}
+
+		if evictErr := h.l2Cache.EvictTagResolution(ctx, in.TenantID, tagEntity.TemplateID, tagEntity.Tag); evictErr != nil {
+			h.logger.ErrorContext(ctx, "failed to evict l2 tag resolution cache",
+				slog.String("trace_id", TraceIDFromContext(ctx)),
+				slog.String("tenant_id", in.TenantID),
+				slog.String("template_id", tagEntity.TemplateID),
+				slog.String("tag", tagEntity.Tag),
+				slog.Int("version", tagEntity.TargetVersion),
+				slog.String("error_code", "L2_CACHE_EVICT_ERROR"),
+			)
+		} else if promotedVer != nil {
+			if setErr := h.l2Cache.SetTagResolution(ctx, in.TenantID, tagEntity.TemplateID, tagEntity.Tag, promotedVer); setErr != nil {
+				h.logger.ErrorContext(ctx, "failed to populate promoted l2 tag resolution cache",
+					slog.String("trace_id", TraceIDFromContext(ctx)),
+					slog.String("tenant_id", in.TenantID),
+					slog.String("template_id", tagEntity.TemplateID),
+					slog.String("tag", tagEntity.Tag),
+					slog.Int("version", tagEntity.TargetVersion),
+					slog.String("error_code", "L2_CACHE_SET_ERROR"),
+				)
+			}
+		}
 	}
 
 	broadcastEmitted := false

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,11 +27,13 @@ import (
 	httptransport "rag-prompt-registry-service/internal/transport/http"
 )
 
+// serverReadiness implements httptransport.ReadinessChecker for the /ready endpoint.
 type serverReadiness struct {
 	pgPool      *pgxpool.Pool
 	redisClient *redis.L2CacheClient
 }
 
+// CheckPostgres verifies PostgreSQL connection pool reachability when a pool is configured.
 func (sr *serverReadiness) CheckPostgres(ctx context.Context) error {
 	if sr.pgPool != nil {
 		return sr.pgPool.Ping(ctx)
@@ -38,6 +41,7 @@ func (sr *serverReadiness) CheckPostgres(ctx context.Context) error {
 	return nil
 }
 
+// CheckRedis verifies Redis cluster reachability when a Redis client is configured.
 func (sr *serverReadiness) CheckRedis(ctx context.Context) error {
 	if sr.redisClient != nil {
 		return sr.redisClient.Ping(ctx)
@@ -45,6 +49,7 @@ func (sr *serverReadiness) CheckRedis(ctx context.Context) error {
 	return nil
 }
 
+// getEnv returns the trimmed environment variable value for key or fallback if unset.
 func getEnv(key, fallback string) string {
 	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
 		return val
@@ -52,6 +57,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// getEnvInt returns the integer environment variable value for key or fallback if unset or invalid.
 func getEnvInt(key string, fallback int) int {
 	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
 		if parsed, err := strconv.Atoi(val); err == nil {
@@ -61,6 +67,7 @@ func getEnvInt(key string, fallback int) int {
 	return fallback
 }
 
+// main initializes dependencies, starts the HTTP and gRPC control plane servers, and handles graceful shutdown.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -70,6 +77,7 @@ func main() {
 	httpPort := getEnv("HTTP_PORT", "8080")
 	grpcPort := getEnv("GRPC_PORT", "50051")
 	pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
+	allowInMemoryStore := strings.EqualFold(getEnv("ALLOW_IN_MEMORY_STORE", "false"), "true")
 	pgMaxConns := int32(getEnvInt("POSTGRES_MAX_CONNS", 25))
 	pgMinConns := int32(getEnvInt("POSTGRES_MIN_CONNS", 2))
 	autoMigrate := strings.EqualFold(getEnv("POSTGRES_AUTO_MIGRATE", "true"), "true")
@@ -109,8 +117,16 @@ func main() {
 			}
 		}
 		promptRepo = postgres.NewPromptRepository(pgPool)
-	} else {
+	} else if allowInMemoryStore {
+		logger.Warn("using non-durable in-memory store because POSTGRES_DSN is unset and ALLOW_IN_MEMORY_STORE=true; all data will be lost on restart",
+			slog.String("storage_mode", "in_memory_non_durable"),
+		)
 		promptRepo = postgres.NewTransactionalMemoryStore()
+	} else {
+		logger.Error("POSTGRES_DSN is required unless ALLOW_IN_MEMORY_STORE=true is explicitly set",
+			slog.String("error_code", "CONFIG_MISSING_POSTGRES_DSN"),
+		)
+		os.Exit(1)
 	}
 
 	l2Cache := redis.NewClusterClient(redis.ClientOptions{
@@ -193,9 +209,31 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	grpcServer.GracefulStop()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http server graceful shutdown error", slog.String("error_code", "HTTP_SHUTDOWN_ERROR"))
-	}
+	var shutdownWg sync.WaitGroup
+	shutdownWg.Add(2)
+
+	go func() {
+		defer shutdownWg.Done()
+		grpcDone := make(chan struct{})
+		go func() {
+			grpcServer.GracefulStop()
+			close(grpcDone)
+		}()
+		select {
+		case <-grpcDone:
+		case <-shutdownCtx.Done():
+			logger.Warn("grpc server graceful shutdown timed out, forcing stop", slog.String("error_code", "GRPC_SHUTDOWN_TIMEOUT"))
+			grpcServer.Stop()
+		}
+	}()
+
+	go func() {
+		defer shutdownWg.Done()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("http server graceful shutdown error", slog.String("error_code", "HTTP_SHUTDOWN_ERROR"))
+		}
+	}()
+
+	shutdownWg.Wait()
 	logger.Info("rag-prompt-registry-service control plane shut down cleanly")
 }

@@ -12,22 +12,30 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// JSONCodecName is the gRPC content subtype used for JSON wire transport without overriding the default "proto" codec.
+const JSONCodecName = "json"
+
+// init registers the JSON codec under the "json" content subtype.
 func init() {
 	encoding.RegisterCodec(jsonCodec{})
 }
 
+// jsonCodec implements google.golang.org/grpc/encoding.Codec for the "json" content subtype.
 type jsonCodec struct{}
 
+// Marshal serializes v into JSON bytes.
 func (jsonCodec) Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// Unmarshal deserializes JSON data into v.
 func (jsonCodec) Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
+// Name returns the codec subtype name ("json").
 func (jsonCodec) Name() string {
-	return "proto"
+	return JSONCodecName
 }
 
 // DialectTarget enumerates supported model dialect targets.
@@ -40,6 +48,7 @@ const (
 	DialectTarget_DIALECT_OPENAI_STANDARD DialectTarget = 3
 )
 
+// String returns the canonical proto enum name for DialectTarget.
 func (d DialectTarget) String() string {
 	switch d {
 	case DialectTarget_DIALECT_ANTHROPIC_XML:
@@ -67,11 +76,13 @@ func ParseDialectTarget(s string) DialectTarget {
 	}
 }
 
+// MessageBlock represents a role-tagged message pattern within a TemplateAST.
 type MessageBlock struct {
 	Role           string `json:"role,omitempty"`
 	ContentPattern string `json:"content_pattern,omitempty"`
 }
 
+// TemplateAST represents the structured abstract syntax tree of a prompt template.
 type TemplateAST struct {
 	SystemPrompt     string            `json:"system_prompt,omitempty"`
 	Messages         []*MessageBlock   `json:"messages,omitempty"`
@@ -81,6 +92,7 @@ type TemplateAST struct {
 	FewShotExemplars []*MessageBlock   `json:"few_shot_exemplars,omitempty"`
 }
 
+// CreateTemplateRequest is the request message for CreateTemplate.
 type CreateTemplateRequest struct {
 	TenantId    string       `json:"tenant_id,omitempty"`
 	Name        string       `json:"name,omitempty"`
@@ -90,11 +102,13 @@ type CreateTemplateRequest struct {
 	Description string       `json:"description,omitempty"`
 }
 
+// CreateTemplateResponse is the response message for CreateTemplate.
 type CreateTemplateResponse struct {
 	TemplateId     string `json:"template_id,omitempty"`
 	InitialVersion uint32 `json:"initial_version,omitempty"`
 }
 
+// PublishVersionRequest is the request message for PublishVersion.
 type PublishVersionRequest struct {
 	TemplateId string       `json:"template_id,omitempty"`
 	RawAst     *TemplateAST `json:"raw_ast,omitempty"`
@@ -103,12 +117,14 @@ type PublishVersionRequest struct {
 	TenantId   string       `json:"tenant_id,omitempty"`
 }
 
+// PublishVersionResponse is the response message for PublishVersion.
 type PublishVersionResponse struct {
 	TemplateId string `json:"template_id,omitempty"`
 	Version    uint32 `json:"version,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`
 }
 
+// PromoteTagRequest is the request message for PromoteTag.
 type PromoteTagRequest struct {
 	TemplateId      string `json:"template_id,omitempty"`
 	Tag             string `json:"tag,omitempty"`
@@ -118,6 +134,7 @@ type PromoteTagRequest struct {
 	TenantId        string `json:"tenant_id,omitempty"`
 }
 
+// PromoteTagResponse is the response message for PromoteTag.
 type PromoteTagResponse struct {
 	TemplateId       string `json:"template_id,omitempty"`
 	Tag              string `json:"tag,omitempty"`
@@ -125,12 +142,14 @@ type PromoteTagResponse struct {
 	BroadcastEmitted bool   `json:"broadcast_emitted,omitempty"`
 }
 
+// ResolveTagRequest is the request message for ResolveTag.
 type ResolveTagRequest struct {
 	TemplateId string `json:"template_id,omitempty"`
 	Tag        string `json:"tag,omitempty"`
 	TenantId   string `json:"tenant_id,omitempty"`
 }
 
+// ResolveTagResponse is the response message for ResolveTag.
 type ResolveTagResponse struct {
 	TemplateId string       `json:"template_id,omitempty"`
 	Tag        string       `json:"tag,omitempty"`
@@ -138,12 +157,14 @@ type ResolveTagResponse struct {
 	Ast        *TemplateAST `json:"ast,omitempty"`
 }
 
+// GetTemplateVersionRequest is the request message for GetTemplateVersion.
 type GetTemplateVersionRequest struct {
 	TemplateId string `json:"template_id,omitempty"`
 	Version    uint32 `json:"version,omitempty"`
 	TenantId   string `json:"tenant_id,omitempty"`
 }
 
+// GetTemplateVersionResponse is the response message for GetTemplateVersion.
 type GetTemplateVersionResponse struct {
 	TemplateId string       `json:"template_id,omitempty"`
 	Version    uint32       `json:"version,omitempty"`
@@ -153,21 +174,25 @@ type GetTemplateVersionResponse struct {
 	CreatedAt  string       `json:"created_at,omitempty"`
 }
 
+// RegisterSchemaRequest is the request message for RegisterSchema.
 type RegisterSchemaRequest struct {
 	TenantId   string `json:"tenant_id,omitempty"`
 	Name       string `json:"name,omitempty"`
 	JsonSchema string `json:"json_schema,omitempty"`
 }
 
+// RegisterSchemaResponse is the response message for RegisterSchema.
 type RegisterSchemaResponse struct {
 	SchemaId string `json:"schema_id,omitempty"`
 }
 
+// GetSchemaRequest is the request message for GetSchema.
 type GetSchemaRequest struct {
 	SchemaId string `json:"schema_id,omitempty"`
 	TenantId string `json:"tenant_id,omitempty"`
 }
 
+// GetSchemaResponse is the response message for GetSchema.
 type GetSchemaResponse struct {
 	SchemaId   string `json:"schema_id,omitempty"`
 	Name       string `json:"name,omitempty"`
@@ -176,12 +201,14 @@ type GetSchemaResponse struct {
 	CreatedAt  string `json:"created_at,omitempty"`
 }
 
+// ListTemplatesRequest is the request message for ListTemplates.
 type ListTemplatesRequest struct {
 	TenantId string `json:"tenant_id,omitempty"`
 	Limit    uint32 `json:"limit,omitempty"`
 	Cursor   string `json:"cursor,omitempty"`
 }
 
+// TemplateSummary represents a prompt template aggregate root in list responses.
 type TemplateSummary struct {
 	Id             string `json:"id,omitempty"`
 	TenantId       string `json:"tenant_id,omitempty"`
@@ -192,17 +219,20 @@ type TemplateSummary struct {
 	UpdatedAt      string `json:"updated_at,omitempty"`
 }
 
+// ListTemplatesResponse is the response message for ListTemplates.
 type ListTemplatesResponse struct {
 	Templates  []*TemplateSummary `json:"templates,omitempty"`
 	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
+// ListSchemasRequest is the request message for ListSchemas.
 type ListSchemasRequest struct {
 	TenantId string `json:"tenant_id,omitempty"`
 	Limit    uint32 `json:"limit,omitempty"`
 	Cursor   string `json:"cursor,omitempty"`
 }
 
+// ListSchemasResponse is the response message for ListSchemas.
 type ListSchemasResponse struct {
 	Schemas    []*GetSchemaResponse `json:"schemas,omitempty"`
 	NextCursor string               `json:"next_cursor,omitempty"`
@@ -221,89 +251,108 @@ type PromptRegistryServiceClient interface {
 	ListSchemas(ctx context.Context, in *ListSchemasRequest, opts ...grpc.CallOption) (*ListSchemasResponse, error)
 }
 
+// promptRegistryServiceClient implements PromptRegistryServiceClient over a grpc.ClientConnInterface.
 type promptRegistryServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
+// withJSONSubtype prepends the "json" content subtype option for RPC invocations.
+func withJSONSubtype(opts []grpc.CallOption) []grpc.CallOption {
+	callOpts := make([]grpc.CallOption, 0, len(opts)+1)
+	callOpts = append(callOpts, grpc.CallContentSubtype(JSONCodecName))
+	callOpts = append(callOpts, opts...)
+	return callOpts
+}
+
+// NewPromptRegistryServiceClient creates a new PromptRegistryServiceClient bound to cc.
 func NewPromptRegistryServiceClient(cc grpc.ClientConnInterface) PromptRegistryServiceClient {
 	return &promptRegistryServiceClient{cc}
 }
 
+// CreateTemplate invokes the CreateTemplate RPC.
 func (c *promptRegistryServiceClient) CreateTemplate(ctx context.Context, in *CreateTemplateRequest, opts ...grpc.CallOption) (*CreateTemplateResponse, error) {
 	out := new(CreateTemplateResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/CreateTemplate", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/CreateTemplate", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// PublishVersion invokes the PublishVersion RPC.
 func (c *promptRegistryServiceClient) PublishVersion(ctx context.Context, in *PublishVersionRequest, opts ...grpc.CallOption) (*PublishVersionResponse, error) {
 	out := new(PublishVersionResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/PublishVersion", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/PublishVersion", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// GetTemplateVersion invokes the GetTemplateVersion RPC.
 func (c *promptRegistryServiceClient) GetTemplateVersion(ctx context.Context, in *GetTemplateVersionRequest, opts ...grpc.CallOption) (*GetTemplateVersionResponse, error) {
 	out := new(GetTemplateVersionResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/GetTemplateVersion", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/GetTemplateVersion", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// PromoteTag invokes the PromoteTag RPC.
 func (c *promptRegistryServiceClient) PromoteTag(ctx context.Context, in *PromoteTagRequest, opts ...grpc.CallOption) (*PromoteTagResponse, error) {
 	out := new(PromoteTagResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/PromoteTag", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/PromoteTag", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// ResolveTag invokes the ResolveTag RPC.
 func (c *promptRegistryServiceClient) ResolveTag(ctx context.Context, in *ResolveTagRequest, opts ...grpc.CallOption) (*ResolveTagResponse, error) {
 	out := new(ResolveTagResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ResolveTag", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ResolveTag", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// RegisterSchema invokes the RegisterSchema RPC.
 func (c *promptRegistryServiceClient) RegisterSchema(ctx context.Context, in *RegisterSchemaRequest, opts ...grpc.CallOption) (*RegisterSchemaResponse, error) {
 	out := new(RegisterSchemaResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/RegisterSchema", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/RegisterSchema", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// GetSchema invokes the GetSchema RPC.
 func (c *promptRegistryServiceClient) GetSchema(ctx context.Context, in *GetSchemaRequest, opts ...grpc.CallOption) (*GetSchemaResponse, error) {
 	out := new(GetSchemaResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/GetSchema", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/GetSchema", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// ListTemplates invokes the ListTemplates RPC.
 func (c *promptRegistryServiceClient) ListTemplates(ctx context.Context, in *ListTemplatesRequest, opts ...grpc.CallOption) (*ListTemplatesResponse, error) {
 	out := new(ListTemplatesResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ListTemplates", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ListTemplates", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+// ListSchemas invokes the ListSchemas RPC.
 func (c *promptRegistryServiceClient) ListSchemas(ctx context.Context, in *ListSchemasRequest, opts ...grpc.CallOption) (*ListSchemasResponse, error) {
 	out := new(ListSchemasResponse)
-	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ListSchemas", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/rag.prompt.v1.PromptRegistryService/ListSchemas", in, out, withJSONSubtype(opts)...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,38 +375,57 @@ type PromptRegistryServiceServer interface {
 // UnimplementedPromptRegistryServiceServer must be embedded to have forward compatible implementations.
 type UnimplementedPromptRegistryServiceServer struct{}
 
+// CreateTemplate returns codes.Unimplemented for CreateTemplate.
 func (UnimplementedPromptRegistryServiceServer) CreateTemplate(context.Context, *CreateTemplateRequest) (*CreateTemplateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateTemplate not implemented")
 }
+
+// PublishVersion returns codes.Unimplemented for PublishVersion.
 func (UnimplementedPromptRegistryServiceServer) PublishVersion(context.Context, *PublishVersionRequest) (*PublishVersionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PublishVersion not implemented")
 }
+
+// GetTemplateVersion returns codes.Unimplemented for GetTemplateVersion.
 func (UnimplementedPromptRegistryServiceServer) GetTemplateVersion(context.Context, *GetTemplateVersionRequest) (*GetTemplateVersionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTemplateVersion not implemented")
 }
+
+// PromoteTag returns codes.Unimplemented for PromoteTag.
 func (UnimplementedPromptRegistryServiceServer) PromoteTag(context.Context, *PromoteTagRequest) (*PromoteTagResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PromoteTag not implemented")
 }
+
+// ResolveTag returns codes.Unimplemented for ResolveTag.
 func (UnimplementedPromptRegistryServiceServer) ResolveTag(context.Context, *ResolveTagRequest) (*ResolveTagResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResolveTag not implemented")
 }
+
+// RegisterSchema returns codes.Unimplemented for RegisterSchema.
 func (UnimplementedPromptRegistryServiceServer) RegisterSchema(context.Context, *RegisterSchemaRequest) (*RegisterSchemaResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterSchema not implemented")
 }
+
+// GetSchema returns codes.Unimplemented for GetSchema.
 func (UnimplementedPromptRegistryServiceServer) GetSchema(context.Context, *GetSchemaRequest) (*GetSchemaResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetSchema not implemented")
 }
+
+// ListTemplates returns codes.Unimplemented for ListTemplates.
 func (UnimplementedPromptRegistryServiceServer) ListTemplates(context.Context, *ListTemplatesRequest) (*ListTemplatesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListTemplates not implemented")
 }
+
+// ListSchemas returns codes.Unimplemented for ListSchemas.
 func (UnimplementedPromptRegistryServiceServer) ListSchemas(context.Context, *ListSchemasRequest) (*ListSchemasResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSchemas not implemented")
 }
 
+// RegisterPromptRegistryServiceServer registers srv with the provided grpc.ServiceRegistrar.
 func RegisterPromptRegistryServiceServer(s grpc.ServiceRegistrar, srv PromptRegistryServiceServer) {
 	s.RegisterService(&PromptRegistryService_ServiceDesc, srv)
 }
 
+// _PromptRegistryService_CreateTemplate_Handler dispatches incoming CreateTemplate RPCs.
 func _PromptRegistryService_CreateTemplate_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(CreateTemplateRequest)
 	if err := dec(in); err != nil {
@@ -376,6 +444,7 @@ func _PromptRegistryService_CreateTemplate_Handler(srv any, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_PublishVersion_Handler dispatches incoming PublishVersion RPCs.
 func _PromptRegistryService_PublishVersion_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(PublishVersionRequest)
 	if err := dec(in); err != nil {
@@ -394,6 +463,7 @@ func _PromptRegistryService_PublishVersion_Handler(srv any, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_GetTemplateVersion_Handler dispatches incoming GetTemplateVersion RPCs.
 func _PromptRegistryService_GetTemplateVersion_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(GetTemplateVersionRequest)
 	if err := dec(in); err != nil {
@@ -412,6 +482,7 @@ func _PromptRegistryService_GetTemplateVersion_Handler(srv any, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_PromoteTag_Handler dispatches incoming PromoteTag RPCs.
 func _PromptRegistryService_PromoteTag_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(PromoteTagRequest)
 	if err := dec(in); err != nil {
@@ -430,6 +501,7 @@ func _PromptRegistryService_PromoteTag_Handler(srv any, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_ResolveTag_Handler dispatches incoming ResolveTag RPCs.
 func _PromptRegistryService_ResolveTag_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(ResolveTagRequest)
 	if err := dec(in); err != nil {
@@ -448,6 +520,7 @@ func _PromptRegistryService_ResolveTag_Handler(srv any, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_RegisterSchema_Handler dispatches incoming RegisterSchema RPCs.
 func _PromptRegistryService_RegisterSchema_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(RegisterSchemaRequest)
 	if err := dec(in); err != nil {
@@ -466,6 +539,7 @@ func _PromptRegistryService_RegisterSchema_Handler(srv any, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_GetSchema_Handler dispatches incoming GetSchema RPCs.
 func _PromptRegistryService_GetSchema_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(GetSchemaRequest)
 	if err := dec(in); err != nil {
@@ -484,6 +558,7 @@ func _PromptRegistryService_GetSchema_Handler(srv any, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_ListTemplates_Handler dispatches incoming ListTemplates RPCs.
 func _PromptRegistryService_ListTemplates_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(ListTemplatesRequest)
 	if err := dec(in); err != nil {
@@ -502,6 +577,7 @@ func _PromptRegistryService_ListTemplates_Handler(srv any, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+// _PromptRegistryService_ListSchemas_Handler dispatches incoming ListSchemas RPCs.
 func _PromptRegistryService_ListSchemas_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(ListSchemasRequest)
 	if err := dec(in); err != nil {
@@ -520,6 +596,7 @@ func _PromptRegistryService_ListSchemas_Handler(srv any, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+// PromptRegistryService_ServiceDesc is the grpc.ServiceDesc for PromptRegistryService.
 var PromptRegistryService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "rag.prompt.v1.PromptRegistryService",
 	HandlerType: (*PromptRegistryServiceServer)(nil),

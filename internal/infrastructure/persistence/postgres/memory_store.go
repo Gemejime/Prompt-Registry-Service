@@ -56,6 +56,7 @@ func (s *TransactionalMemoryStore) SetFaultInjectAuditFailure(fail bool) {
 	s.faultInjectAuditFailure = fail
 }
 
+// newUUIDv4 generates a random RFC 4122 version 4 UUID string.
 func newUUIDv4() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
@@ -70,6 +71,7 @@ func newUUIDv4() string {
 	)
 }
 
+// resolveTemplateLocked resolves a template by UUID or tenant-scoped name while s.mu is held.
 func (s *TransactionalMemoryStore) resolveTemplateLocked(tenantID, identifier string) (entity.PromptTemplate, error) {
 	identifier = strings.TrimSpace(identifier)
 	if entity.IsValidUUID(identifier) {
@@ -86,6 +88,7 @@ func (s *TransactionalMemoryStore) resolveTemplateLocked(tenantID, identifier st
 	return entity.PromptTemplate{}, fmt.Errorf("%w: template %q not found in tenant", entity.ErrNotFound, identifier)
 }
 
+// verifySchemaLocked verifies that schemaID exists within tenantID while s.mu is held.
 func (s *TransactionalMemoryStore) verifySchemaLocked(tenantID, schemaID string) error {
 	sc, ok := s.schemas[schemaID]
 	if !ok || sc.TenantID != tenantID {
@@ -94,6 +97,7 @@ func (s *TransactionalMemoryStore) verifySchemaLocked(tenantID, schemaID string)
 	return nil
 }
 
+// appendAuditLocked appends an immutable AuditEntry to the in-memory ledger while s.mu is held.
 func (s *TransactionalMemoryStore) appendAuditLocked(entry entity.AuditEntry) error {
 	if s.faultInjectAuditFailure {
 		return fmt.Errorf("simulated transactional audit ledger write failure")
