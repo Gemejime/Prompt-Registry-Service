@@ -647,4 +647,3 @@ func TestClientSingleflightCoalescingPubSubAndSecuredLogging(t *testing.T) {
 		t.Fatalf("CRITICAL SECURED LOGGING VIOLATION: confidential prompt or context leaked in logs:\n%s", logs)
 	}
 }
-

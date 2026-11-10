@@ -235,4 +235,3 @@ func BenchmarkSDK50KBContextRender(b *testing.B) {
 		}
 	})
 }
-
