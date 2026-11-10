@@ -8,6 +8,7 @@
 package promptsdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,8 +92,14 @@ type PromptSDK interface {
 	// Zero allocations on hot path; P99 <= 0.5ms.
 	Render(ctx context.Context, templateID string, tagOrVersion string, opts RenderOptions) ([]byte, error)
 
-	// Invalidate explicitly forces cache eviction.
+	// RenderToBuffer renders directly into the provided bytes.Buffer with 0 heap allocations on cache hits.
+	RenderToBuffer(ctx context.Context, dst *bytes.Buffer, templateID string, tagOrVersion string, opts RenderOptions) error
+
+	// Invalidate explicitly forces cache eviction for a specific tag pointer.
 	Invalidate(templateID string, tag string)
+
+	// Purge forces an immediate local wipe of all mutable tag cache pointers in L1_tag (Runbook 2).
+	Purge()
 
 	// Close cleanly terminates Redis Pub/Sub listeners.
 	Close() error

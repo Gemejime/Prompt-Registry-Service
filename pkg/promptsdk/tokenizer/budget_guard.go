@@ -444,4 +444,3 @@ func (g *BudgetGuard) EnforceBudget(
 	}
 	return trimmed, nil
 }
-

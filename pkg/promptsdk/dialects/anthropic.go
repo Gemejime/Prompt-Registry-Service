@@ -282,4 +282,3 @@ func writeAnthropicSegments(
 	}
 	return "", false
 }
-

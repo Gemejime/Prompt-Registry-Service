@@ -68,6 +68,7 @@ type CacheStats struct {
 // and `L1_tag` with 5-minute safety TTL) and bidirectional template name <-> UUID alias resolution.
 type L1Cache struct {
 	mu            sync.RWMutex
+	tenantID      string
 	versions      map[versionCacheKey]*CompiledTemplate
 	tags          map[tagCacheKey]tagCacheEntry
 	schemas       map[string]*SchemaContract
@@ -110,6 +111,26 @@ func (c *L1Cache) SetClock(nowFunc func() time.Time) {
 	c.mu.Lock()
 	c.nowFunc = nowFunc
 	c.mu.Unlock()
+}
+
+// SetTenantID sets the tenant UUID for tenant boundary isolation (Layer 4).
+func (c *L1Cache) SetTenantID(tenantID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.tenantID = strings.TrimSpace(tenantID)
+	c.mu.Unlock()
+}
+
+// TenantID returns the configured tenant UUID.
+func (c *L1Cache) TenantID() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tenantID
 }
 
 // SetOfflineRetryCooldown configures the retry cooldown applied when control-plane tag refresh fails.
@@ -392,11 +413,33 @@ func (c *L1Cache) Invalidate(templateID, tag string) {
 	c.evictions.Add(1)
 }
 
+// PurgeTags wipes all mutable tag entries from L1_tag while preserving immutable template versions in L1_version (Runbook 2).
+func (c *L1Cache) PurgeTags() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	for k := range c.tags {
+		delete(c.tags, k)
+	}
+	c.mu.Unlock()
+	c.evictions.Add(1)
+}
+
 // HandleInvalidationPayload parses a Redis Pub/Sub InvalidationEvent JSON payload and evicts the matching tag.
+// If the cache has a configured TenantID and evt.TenantID != "", events targeting different tenants are safely ignored
+// without evicting local cache keys (Tenant Boundary Isolation, Layer 4).
 func (c *L1Cache) HandleInvalidationPayload(rawJSON string) (InvalidationEvent, error) {
 	var evt InvalidationEvent
 	if err := json.Unmarshal([]byte(rawJSON), &evt); err != nil {
 		return InvalidationEvent{}, err
+	}
+	c.mu.RLock()
+	configuredTenant := c.tenantID
+	c.mu.RUnlock()
+	if configuredTenant != "" && evt.TenantID != "" && configuredTenant != evt.TenantID {
+		// Event targets a different tenant; safely ignore without evicting local entries.
+		return evt, nil
 	}
 	if strings.TrimSpace(evt.TemplateID) != "" {
 		c.Invalidate(evt.TemplateID, evt.Tag)
@@ -456,4 +499,3 @@ func (c *L1Cache) Stats() CacheStats {
 		OverallHitRatio: c.HitRatio("all"),
 	}
 }
-

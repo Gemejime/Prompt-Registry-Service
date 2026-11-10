@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"os"
 	"strconv"
@@ -173,6 +174,9 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	cache := NewL1Cache(cfg.TagTTL)
 	cache.SetOfflineRetryCooldown(cfg.OfflineRetryCooldown)
+	if strings.TrimSpace(cfg.TenantID) != "" {
+		cache.SetTenantID(cfg.TenantID)
+	}
 
 	var ownedConn *grpc.ClientConn
 	grpcClient := cfg.RegistryClient
@@ -728,6 +732,18 @@ func (c *Client) Invalidate(templateID string, tag string) {
 	c.cache.Invalidate(templateID, tag)
 }
 
+// Purge forces an immediate local wipe of all mutable tag cache pointers in L1_tag (Runbook 2).
+func (c *Client) Purge() {
+	if c == nil || c.cache == nil {
+		return
+	}
+	c.cache.PurgeTags()
+	c.logger.Info("sdk local tag cache purged",
+		slog.String("node_id", c.nodeID),
+		slog.String("tenant_id", c.cfg.TenantID),
+	)
+}
+
 // Close cleanly terminates Redis Pub/Sub listeners and closes any owned gRPC connection.
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
@@ -776,9 +792,18 @@ func (c *Client) runChannelSubscriber(sub <-chan string) {
 	}
 }
 
-// runRedisTCPSubscriber maintains a resilient Redis RESP Pub/Sub subscription to channel:prompt:invalidation.
+const (
+	initialReconnectBackoff = 100 * time.Millisecond
+	reconnectBackoffFactor  = 2.0
+	maxReconnectBackoff     = 3 * time.Second
+)
+
+// runRedisTCPSubscriber maintains a resilient Redis RESP Pub/Sub subscription to channel:prompt:invalidation
+// with automated reconnection, exponential backoff (100ms..3s, factor 2.0), and ±20% jitter (Runbook 2).
 func (c *Client) runRedisTCPSubscriber() {
 	defer c.wg.Done()
+	currentBackoff := initialReconnectBackoff
+
 	for {
 		select {
 		case <-c.stopCh:
@@ -787,7 +812,10 @@ func (c *Client) runRedisTCPSubscriber() {
 		default:
 		}
 
-		err := c.subscribeRedisOnce()
+		err := c.subscribeRedisOnce(func() {
+			c.pubsubConnected.Store(true)
+			currentBackoff = initialReconnectBackoff
+		})
 		c.pubsubConnected.Store(false)
 		if err != nil && !c.closed.Load() {
 			c.logger.Warn("sdk redis pubsub listener disconnected; falling back to 5m safety TTL",
@@ -796,15 +824,25 @@ func (c *Client) runRedisTCPSubscriber() {
 			)
 		}
 
+		// Jittered backoff: initial 100ms, factor 2.0, max 3s, jitter ±20% (0.8 .. 1.2)
+		jitterFraction := 0.8 + 0.4*rand.Float64()
+		sleepDur := time.Duration(float64(currentBackoff) * jitterFraction)
+
+		nextBackoff := time.Duration(float64(currentBackoff) * reconnectBackoffFactor)
+		if nextBackoff > maxReconnectBackoff {
+			nextBackoff = maxReconnectBackoff
+		}
+		currentBackoff = nextBackoff
+
 		select {
 		case <-c.stopCh:
 			return
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(sleepDur):
 		}
 	}
 }
 
-func (c *Client) subscribeRedisOnce() error {
+func (c *Client) subscribeRedisOnce(onSubscribed func()) error {
 	var conn net.Conn
 	var dialErr error
 	dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
@@ -876,17 +914,23 @@ func (c *Client) subscribeRedisOnce() error {
 		}
 		switch strings.ToLower(arr[0]) {
 		case "subscribe":
-			c.pubsubConnected.Store(true)
+			if onSubscribed != nil {
+				onSubscribed()
+			} else {
+				c.pubsubConnected.Store(true)
+			}
 		case "message":
 			payload := arr[2]
 			if evt, pErr := c.cache.HandleInvalidationPayload(payload); pErr == nil {
-				c.logger.Info("sdk cache tag invalidated via redis pubsub",
-					slog.String("event_id", evt.EventID),
-					slog.String("tenant_id", evt.TenantID),
-					slog.String("template_id", evt.TemplateID),
-					slog.String("tag", evt.Tag),
-					slog.Int("new_version", evt.NewVersion),
-				)
+				if evt.EventID != "" {
+					c.logger.Info("sdk cache tag invalidated via redis pubsub",
+						slog.String("event_id", evt.EventID),
+						slog.String("tenant_id", evt.TenantID),
+						slog.String("template_id", evt.TemplateID),
+						slog.String("tag", evt.Tag),
+						slog.Int("new_version", evt.NewVersion),
+					)
+				}
 			}
 		}
 	}

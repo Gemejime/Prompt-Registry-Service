@@ -419,4 +419,3 @@ func Compile(compiled *CompiledTemplate, opts RenderOptions, guard *tokenizer.Bu
 	copy(out, buf.Bytes())
 	return out, nil
 }
-

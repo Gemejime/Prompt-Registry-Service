@@ -201,4 +201,3 @@ func writeJSONSegments(
 	}
 	return "", false
 }
-
