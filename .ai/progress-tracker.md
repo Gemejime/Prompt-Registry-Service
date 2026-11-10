@@ -94,6 +94,8 @@
     - **Contract & Spec Synchronization**:
       - Updated `.ai/doc-api.md` Section 7 and Section 8 with orchestrator interfaces, response models, and Prometheus metrics.
       - Created comprehensive test suites: `pkg/orchestrator/pipeline_test.go`, `test/integration/phase3_invalidation_bus_test.go`, and `test/integration/phase3_orchestrator_test.go`.
+      - Achieved 100% Go docstring coverage across all packages, types, and test helper functions.
+      - Updated `.github/workflows/ci.yml` govulncheck installation to `@latest` ensuring full compatibility with Go 1.26+ toolchains.
 
 ---
 
