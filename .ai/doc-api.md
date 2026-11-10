@@ -1048,9 +1048,15 @@ type PromptSDK interface {
     // Zero allocations on hot path; P99 <= 0.5ms.
     Render(ctx context.Context, templateID string, tagOrVersion string, opts RenderOptions) ([]byte, error)
     
+    // RenderToBuffer renders directly into the provided bytes.Buffer with 0 heap allocations on cache hits.
+    RenderToBuffer(ctx context.Context, dst *bytes.Buffer, templateID string, tagOrVersion string, opts RenderOptions) error
+
     // Invalidate explicitly forces cache eviction
     Invalidate(templateID string, tag string)
     
+    // Purge forces an immediate local wipe of all mutable tag cache pointers in L1_tag (Runbook 2)
+    Purge()
+
     // Close cleanly terminates Redis Pub/Sub listeners
     Close() error
 }
@@ -1066,6 +1072,91 @@ type PromptSDK interface {
 // - (*Client).RenderToBuffer(ctx context.Context, dst *bytes.Buffer, templateID string, tagOrVersion string, opts RenderOptions) error
 // - (*Client).PreloadVersion(templateID, templateName string, version int, ast TemplateAST, schema *SchemaContract) (*CompiledTemplate, error)
 // - (*Client).PreloadTag(templateID, templateName, tag string, version int, ast TemplateAST, schema *SchemaContract) (*CompiledTemplate, error)
+// - (*Client).Purge()
+
+// Phase 3 Orchestrator Data Plane Pipeline (pkg/orchestrator):
+//
+// type ExecutionMode string // "production" | "diagnostic"
+//
+// type RetrievedChunk struct {
+//     ChunkID    string            `json:"chunk_id"`
+//     DocumentID string            `json:"document_id"`
+//     Text       string            `json:"text"`
+//     Score      float64           `json:"score"`
+//     Metadata   map[string]string `json:"metadata,omitempty"`
+// }
+//
+// type ContextRetriever interface {
+//     Retrieve(ctx context.Context, query string) ([]RetrievedChunk, error)
+// }
+//
+// type InferenceRequest struct {
+//     Model       string            `json:"model"`
+//     Prompt      []byte            `json:"prompt"`
+//     MaxTokens   int               `json:"max_tokens"`
+//     Temperature float64           `json:"temperature,omitempty"`
+//     Stop        []string          `json:"stop,omitempty"`
+//     Metadata    map[string]string `json:"metadata,omitempty"`
+// }
+//
+// type InferenceResponse struct {
+//     ModelID      string `json:"model_id"`
+//     OutputText   string `json:"output_text"`
+//     FinishReason string `json:"finish_reason"`
+//     TokensUsed   int    `json:"tokens_used"`
+// }
+//
+// type InferenceDispatcher interface {
+//     Dispatch(ctx context.Context, req InferenceRequest) (*InferenceResponse, error)
+// }
+//
+// type PipelineRequest struct {
+//     Query              string                `json:"query"`
+//     TemplateID         string                `json:"template_id"`
+//     TagOrVersion       string                `json:"tag_or_version"`
+//     TargetDialect      promptsdk.DialectType `json:"target_dialect,omitempty"`
+//     Variables          map[string]string     `json:"variables,omitempty"`
+//     Persona            string                `json:"persona,omitempty"`
+//     MaxTokens          int                   `json:"max_tokens,omitempty"`
+//     Model              string                `json:"model,omitempty"`
+//     Mode               ExecutionMode         `json:"mode,omitempty"`
+//     StrictVariables    bool                  `json:"strict_variables,omitempty"`
+//     PreRetrievedChunks []RetrievedChunk      `json:"pre_retrieved_chunks,omitempty"`
+// }
+//
+// type TimingWaterfall struct {
+//     AssemblyMs  float64 `json:"assembly_ms"`
+//     SDKRenderMs float64 `json:"sdk_render_ms"`
+//     InferenceMs float64 `json:"inference_ms"`
+//     TotalMs     float64 `json:"total_ms"`
+// }
+//
+// type TokenBudgetTrace struct {
+//     BudgetLimit       int  `json:"budget_limit"`
+//     TokensUsed        int  `json:"tokens_used"`
+//     FramingOverhead   int  `json:"framing_overhead"`
+//     ContextTokens     int  `json:"context_tokens"`
+//     TruncationApplied bool `json:"truncation_applied"`
+// }
+//
+// type DiagnosticTrace struct {
+//     Timing          TimingWaterfall  `json:"timing"`
+//     TokenBudget     TokenBudgetTrace `json:"token_budget"`
+//     RetrievedChunks []RetrievedChunk `json:"retrieved_chunks"`
+//     Dialect         string           `json:"dialect"`
+//     CompiledPrompt  string           `json:"compiled_prompt,omitempty"`
+// }
+//
+// type PipelineResponse struct {
+//     OutputText        string             `json:"output_text"`
+//     InferenceResponse *InferenceResponse `json:"inference_response,omitempty"`
+//     CompiledPrompt    []byte             `json:"compiled_prompt,omitempty"`
+//     Diagnostic        *DiagnosticTrace   `json:"diagnostic,omitempty"`
+// }
+//
+// type RAGPipeline struct { ... }
+// func NewRAGPipeline(cfg PipelineConfig) (*RAGPipeline, error)
+// func (*RAGPipeline).Execute(ctx context.Context, req PipelineRequest) (*PipelineResponse, error)
 ```
 
 ---
@@ -1079,3 +1170,6 @@ type PromptSDK interface {
 | `prompt_sdk_cache_hit_ratio` | Gauge | `tier` (L1_version, L1_tag) | Local SDK memory hit ratio (Target $>99.9\%$) |
 | `prompt_invalidation_events_published_total` | Counter | `status` | Redis Pub/Sub eviction signals emitted |
 | `prompt_sdk_pubsub_connected` | Gauge | `node_id` | Orchestrator Pub/Sub connection status (1=healthy, 0=fallback TTL) |
+| `rag_orchestrator_pipeline_duration_seconds` | Histogram | `mode`, `dialect` | End-to-end RAG orchestrator pipeline execution latency |
+| `rag_orchestrator_context_bytes` | Histogram | _none_ | Assembled document chunk context payload size in bytes |
+| `rag_orchestrator_requests_total` | Counter | `status` | Total RAG pipeline requests executed |

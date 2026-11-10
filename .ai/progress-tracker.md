@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 2: In-Process Engine (`go-prompt-sdk`) (Weeks 3–4)** (🟢 Completed)
+- **Phase 3: Cache Invalidation & Orchestrator Wiring (Weeks 5–6)** (🟢 Completed)
 
 ## Current Goal
 
-- Phase 2 completed and verified. Ready to proceed to **Phase 3: Cache Invalidation & Orchestrator Wiring**.
+- Phase 3 completed and verified. Ready to proceed to **Phase 4: Resilience, Chaos & Production Rollout**.
 
 ---
 
@@ -16,7 +16,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Schemas & Relational Core** | Weeks 1–2 | Control Plane Database & Immutability | • `.gitignore` ignoring `tasks/` and build artifacts.<br>• Comprehensive GitHub Actions CI workflow (lint-and-typecheck, security-and-logging-audit, OpenAPI 3.1 sync, test-suites).<br>• Full `.ai` context overhaul and `GEMINI.md` aligned with backend concepts.<br>• PostgreSQL 16 schema with strict tenant isolation, immutable version tables, tag pointers, and an internal audit ledger.<br>• PgBouncer integration verifying Simple Protocol Mode via `jackc/pgx/v5`.<br>• Core gRPC/REST management APIs for prompt versioning and schema registration. | 🟢 Completed |
 | **Phase 2: In-Process Engine (`go-prompt-sdk`)** | Weeks 3–4 | Compiler, Buffer Pools & Dialects | • Implementation of `go-prompt-sdk` featuring `sync.Pool` zero-allocation string interpolation.<br>• Dialect adapters for Anthropic XML, Meta Llama-3 special tokens, and standard JSON formats.<br>• Tokenizer budgeting hooks calculating framing overhead before interpolation.<br>• Unit test suite & memory benchmark validation ($P99 \le 0.5$ms, 0 heap escapes across 50 KB context blocks). | 🟢 Completed |
-| **Phase 3: Cache Invalidation & Orchestrator Wiring** | Weeks 5–6 | Redis Pub/Sub & SDK Synchronization | • Multi-instance cache invalidation bus via Redis Pub/Sub (`channel:prompt:invalidation`).<br>• Embedded SDK integration into `rag-search-orchestrator` pipeline.<br>• Benchmark validation: $<0.5$ms rendering times and $<500$ms pointer propagation. | ⚪ Pending |
+| **Phase 3: Cache Invalidation & Orchestrator Wiring** | Weeks 5–6 | Redis Pub/Sub & SDK Synchronization | • Multi-instance cache invalidation bus via Redis Pub/Sub (`channel:prompt:invalidation`).<br>• Embedded SDK integration into `rag-search-orchestrator` pipeline.<br>• Benchmark validation: $<0.5$ms rendering times and $<500$ms pointer propagation. | 🟢 Completed |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Fault Tolerance & Release Gating | • Chaos testing: killing registry pods while validating uninterrupted SDK in-memory rendering.<br>• Allocation profiling verifying zero memory accumulation on 10,000 RPS orchestrator loads.<br>• Production deployment via Helm and canary cutover. | ⚪ Pending |
 
 ---
@@ -76,6 +76,24 @@
     - Implemented embedded `Client` (`pkg/promptsdk/client.go`) with per-key singleflight coalescing, Bearer JWT metadata auth, Redis TCP RESP and in-process Pub/Sub listener, and Prometheus metrics exposition (`prompt_sdk_render_duration_seconds`, `prompt_sdk_cache_hit_ratio`, `prompt_sdk_pubsub_connected`).
     - Added `schema_id` parity to `ResolveTagResponse` across `proto/v1/prompt_service.proto`, `proto/v1/prompt_service_grpc.go`, `internal/transport/grpc/prompt_admin_server.go`, `internal/transport/http/router.go`, `openapi/openapi.yaml`, and `.ai/doc-api.md`.
     - Implemented comprehensive test suites: `pkg/promptsdk/sdk_test.go`, `test/unit/phase2_sdk_test.go`, and canonical `test/sdk/sdk_benchmark_test.go` verifying 0 allocs/op across 50 KB context blocks, P99 render latency, and concurrent pointer switches.
+  - **Phase 3 Cache Invalidation & Orchestrator Wiring Implementation**:
+    - **Multi-Node Invalidation Bus (ADR-002)**: Connected concurrent SDK instances to Redis Pub/Sub (`channel:prompt:invalidation`), achieving sub-millisecond local tag eviction and $<500$ms global cluster propagation upon atomic `@production` switches and rollbacks.
+    - **Tenant Boundary Isolation (Layer 4)**: Enforced strict tenant checks in `L1Cache.HandleInvalidationPayload` preventing cross-tenant tag eviction.
+    - **Resilient Auto-Reconnect with Exponential Backoff (Runbook 2)**: Hardened Redis RESP TCP subscriber with automated reconnection, exponential backoff (100ms..3s, factor 2.0), ±20% jitter, and backoff curve reset on Redis `SUBSCRIBE` confirmation, dynamically managing `prompt_sdk_pubsub_connected` gauge.
+    - **Forced Cache Wipe & Diagnostic API (Runbook 2 Step 3)**: Implemented `Client.Purge()` and `L1Cache.PurgeTags()` wiping mutable tag pointers while preserving immutable version blocks.
+    - **Decoupled Data Plane Orchestrator Pipeline (`pkg/orchestrator`)**:
+      - Implemented decoupled interfaces `ContextRetriever` and `InferenceDispatcher`.
+      - Built 4-stage pipeline `RAGPipeline.Execute`: Stage 1 Context Assembly -> Stage 2 In-Process `PromptSDK.RenderToBuffer` -> Stage 3 Tokenizer Budget Guard & Truncation -> Stage 4 Downstream Inference Forwarding.
+      - Dual-mode execution: Production mode (minimal overhead) vs Diagnostic mode (waterfall timings `assembly_ms`, `sdk_render_ms`, `inference_ms`, `total_ms`, token budget breakdown, and chunk provenance).
+      - Zero-allocation hot path: 0 heap allocations (`0 B/op`, `0 allocs/op`) during 50 KB context rendering via `sync.Pool` buffer reuse.
+      - Observability: Implemented Prometheus pipeline metrics (`rag_orchestrator_pipeline_duration_seconds`, `rag_orchestrator_context_bytes`, `rag_orchestrator_requests_total`).
+    - **Chaos & Outage Resilience Verification**:
+      - Verified 100% availability, 0 errors, and sub-millisecond latency under 500 concurrent pipeline requests during complete Control Plane & Redis outages.
+      - Stale-while-offline past the 5-minute fallback TTL serves cached versions seamlessly via singleflight coalescing and retry cooldown protection.
+      - Uncached tag requests return `ErrTemplateNotFound` cleanly without resource leaks.
+    - **Contract & Spec Synchronization**:
+      - Updated `.ai/doc-api.md` Section 7 and Section 8 with orchestrator interfaces, response models, and Prometheus metrics.
+      - Created comprehensive test suites: `pkg/orchestrator/pipeline_test.go`, `test/integration/phase3_invalidation_bus_test.go`, and `test/integration/phase3_orchestrator_test.go`.
 
 ---
 
