@@ -686,6 +686,7 @@ func (c *Client) outgoingRPCContext(parent context.Context) (context.Context, co
 	return ctx, cancel
 }
 
+// protoASTToSDK converts a Protobuf TemplateAST message to the in-memory SDK TemplateAST entity.
 func protoASTToSDK(pb *promptv1.TemplateAST) TemplateAST {
 	if pb == nil {
 		return TemplateAST{}
@@ -842,6 +843,7 @@ func (c *Client) runRedisTCPSubscriber() {
 	}
 }
 
+// subscribeRedisOnce dials a configured Redis endpoint, executes SUBSCRIBE, and listens for invalidation events.
 func (c *Client) subscribeRedisOnce(onSubscribed func()) error {
 	var conn net.Conn
 	var dialErr error
@@ -936,6 +938,7 @@ func (c *Client) subscribeRedisOnce(onSubscribed func()) error {
 	}
 }
 
+// writeRESPCommand serializes and sends a Redis RESP array command over the wire.
 func writeRESPCommand(w io.Writer, args ...string) error {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("*%d\r\n", len(args)))
@@ -946,6 +949,7 @@ func writeRESPCommand(w io.Writer, args ...string) error {
 	return err
 }
 
+// readRESPValue deserializes a single RESP protocol element from the buffered stream.
 func readRESPValue(r *bufio.Reader) (any, error) {
 	line, err := r.ReadString('\n')
 	if err != nil {
@@ -1061,6 +1065,7 @@ func (c *Client) MetricsExposition() string {
 	return sb.String()
 }
 
+// writeDialectMetricLines renders Prometheus duration count and sum metrics for a specific dialect.
 func writeDialectMetricLines(sb *strings.Builder, dialect string, m *dialectMetricCounters) {
 	succCnt := m.successCount.Load()
 	succSum := float64(m.successNanos.Load()) / 1e9

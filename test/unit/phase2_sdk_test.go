@@ -429,6 +429,7 @@ type countingRegistryClient struct {
 	artificialDelay time.Duration
 }
 
+// ResolveTag forwards to the underlying client while tracking invocation counts and optional delays.
 func (c *countingRegistryClient) ResolveTag(ctx context.Context, in *promptv1.ResolveTagRequest, opts ...grpc.CallOption) (*promptv1.ResolveTagResponse, error) {
 	c.resolveTagCalls.Add(1)
 	if c.artificialDelay > 0 {
@@ -437,6 +438,7 @@ func (c *countingRegistryClient) ResolveTag(ctx context.Context, in *promptv1.Re
 	return c.PromptRegistryServiceClient.ResolveTag(ctx, in, opts...)
 }
 
+// GetSchema forwards to the underlying client while tracking call counts.
 func (c *countingRegistryClient) GetSchema(ctx context.Context, in *promptv1.GetSchemaRequest, opts ...grpc.CallOption) (*promptv1.GetSchemaResponse, error) {
 	c.getSchemaCalls.Add(1)
 	return c.PromptRegistryServiceClient.GetSchema(ctx, in, opts...)

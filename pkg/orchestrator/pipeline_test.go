@@ -15,6 +15,7 @@ type mockRetriever struct {
 	chunks []orchestrator.RetrievedChunk
 }
 
+// Retrieve returns mock retrieved passage chunks for unit testing.
 func (m *mockRetriever) Retrieve(ctx context.Context, query string) ([]orchestrator.RetrievedChunk, error) {
 	return m.chunks, nil
 }
@@ -25,11 +26,13 @@ type mockDispatcher struct {
 	response    orchestrator.InferenceResponse
 }
 
+// Dispatch records the inference request and returns the configured mock response.
 func (m *mockDispatcher) Dispatch(ctx context.Context, req orchestrator.InferenceRequest) (*orchestrator.InferenceResponse, error) {
 	m.lastRequest = req
 	return &m.response, nil
 }
 
+// setupTestPipeline constructs a test harness containing a RAGPipeline and mock dispatcher.
 func setupTestPipeline(t *testing.T) (*orchestrator.RAGPipeline, *promptsdk.Client, *mockDispatcher) {
 	t.Helper()
 	client, err := promptsdk.NewClient(promptsdk.ClientConfig{

@@ -14,6 +14,7 @@ import (
 	"rag-prompt-registry-service/internal/infrastructure/cache/redis"
 )
 
+// traceIDKeyType represents an unexported context key type for storing correlated trace IDs.
 type traceIDKeyType struct{}
 
 var traceIDContextKey = traceIDKeyType{}

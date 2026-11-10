@@ -225,6 +225,7 @@ func RenderAnthropicCompiled(
 	return "", false
 }
 
+// writeAnthropicSegments renders compiled template segments into the destination buffer with Anthropic XML conventions.
 func writeAnthropicSegments(
 	dst *bytes.Buffer,
 	segments []Segment,

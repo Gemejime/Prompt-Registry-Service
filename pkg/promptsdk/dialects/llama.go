@@ -119,6 +119,7 @@ func RenderLlamaCompiled(
 	return "", false
 }
 
+// writeLlamaSegments interpolates variables into compiled segments for Llama-3 special token formatting.
 func writeLlamaSegments(
 	dst *bytes.Buffer,
 	segments []Segment,

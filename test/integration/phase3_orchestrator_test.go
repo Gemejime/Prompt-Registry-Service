@@ -29,6 +29,7 @@ type mockTestRetriever struct {
 	chunks []orchestrator.RetrievedChunk
 }
 
+// Retrieve yields configured synthetic chunks for integration testing.
 func (m *mockTestRetriever) Retrieve(ctx context.Context, query string) ([]orchestrator.RetrievedChunk, error) {
 	return m.chunks, nil
 }
@@ -39,6 +40,7 @@ type mockTestDispatcher struct {
 	dispatchCount int
 }
 
+// Dispatch simulates a model inference response and increments the dispatch counter.
 func (m *mockTestDispatcher) Dispatch(ctx context.Context, req orchestrator.InferenceRequest) (*orchestrator.InferenceResponse, error) {
 	m.mu.Lock()
 	m.dispatchCount++

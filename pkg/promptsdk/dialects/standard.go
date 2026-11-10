@@ -165,6 +165,7 @@ func RenderStandardJSONCompiled(
 	return "", false
 }
 
+// writeJSONSegments writes escaped JSON message segments into the destination buffer.
 func writeJSONSegments(
 	dst *bytes.Buffer,
 	segments []Segment,

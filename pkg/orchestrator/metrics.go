@@ -16,17 +16,20 @@ type PipelineMetrics struct {
 	errorTotal   atomic.Uint64
 }
 
+// metricBucketTracker atomically tracks invocation counts and scaled aggregate sums.
 type metricBucketTracker struct {
 	count atomic.Uint64
 	sum   atomic.Uint64 // stored in micro-units (micro-seconds or bytes)
 }
 
+// observe records an observation into the counter and scaled sum tracker.
 func (t *metricBucketTracker) observe(val float64, scale float64) {
 	t.count.Add(1)
 	scaled := uint64(val * scale)
 	t.sum.Add(scaled)
 }
 
+// snapshot retrieves the current count and descaled floating-point sum.
 func (t *metricBucketTracker) snapshot(scale float64) (uint64, float64) {
 	cnt := t.count.Load()
 	rawSum := t.sum.Load()

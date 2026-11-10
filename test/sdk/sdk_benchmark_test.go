@@ -13,6 +13,7 @@ import (
 	"rag-prompt-registry-service/pkg/promptsdk"
 )
 
+// setupSeededSDKClient sets up a pre-seeded in-memory SDK client and sample 50 KB variable payload for benchmarks.
 func setupSeededSDKClient(tb testing.TB) (*promptsdk.Client, map[string]string) {
 	tb.Helper()
 	client, err := promptsdk.NewClient(promptsdk.ClientConfig{

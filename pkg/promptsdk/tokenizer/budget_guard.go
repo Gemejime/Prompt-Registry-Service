@@ -50,6 +50,7 @@ func DefaultTokenizer() Tokenizer {
 	return defaultTokenizerInstance
 }
 
+// charClass categorizes characters into alphanumeric runs, whitespace runs, or punctuation.
 type charClass uint8
 
 const (
@@ -65,6 +66,7 @@ type tokenScannerState struct {
 	runLen   int
 }
 
+// feedASCIIByte updates the token count and run tracking for a single ASCII byte.
 func (s *tokenScannerState) feedASCIIByte(b byte) {
 	if isAlnumByte(b) {
 		if s.runClass == classAlnum && s.runLen < 4 {
@@ -92,6 +94,7 @@ func (s *tokenScannerState) feedASCIIByte(b byte) {
 	s.runLen = 0
 }
 
+// feedUTF8Rune updates the token counter for multi-byte UTF-8 runes.
 func (s *tokenScannerState) feedUTF8Rune(r rune, width int) {
 	s.runClass = classNone
 	s.runLen = 0
@@ -106,16 +109,19 @@ func (s *tokenScannerState) feedUTF8Rune(r rune, width int) {
 	}
 }
 
+// feedLiteralASCII ingests a fixed ASCII string without intermediate allocations.
 func (s *tokenScannerState) feedLiteralASCII(lit string) {
 	for i := 0; i < len(lit); i++ {
 		s.feedASCIIByte(lit[i])
 	}
 }
 
+// isAlnumByte reports whether b is an ASCII alphanumeric character or underscore.
 func isAlnumByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
+// isSpaceByte reports whether b is standard ASCII whitespace.
 func isSpaceByte(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
@@ -147,6 +153,7 @@ func matchLlamaSpecialToken(text string, idx int) int {
 	}
 }
 
+// matchLlamaSpecialTokenBytes checks whether data[idx:] matches a Meta Llama-3 special token byte sequence.
 func matchLlamaSpecialTokenBytes(data []byte, idx int) int {
 	rem := len(data) - idx
 	if rem < 10 || data[idx] != '<' || data[idx+1] != '|' {
