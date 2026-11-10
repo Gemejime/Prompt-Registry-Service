@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 1: Schemas & Relational Core (Weeks 1–2)** (🟢 Completed)
+- **Phase 2: In-Process Engine (`go-prompt-sdk`) (Weeks 3–4)** (🟢 Completed)
 
 ## Current Goal
 
-- Phase 1 completed and verified. Ready to proceed to **Phase 2: In-Process Engine (`go-prompt-sdk`)**.
+- Phase 2 completed and verified. Ready to proceed to **Phase 3: Cache Invalidation & Orchestrator Wiring**.
 
 ---
 
@@ -15,7 +15,7 @@
 | Phase | Timeline | Focus Area | Deliverables & Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Schemas & Relational Core** | Weeks 1–2 | Control Plane Database & Immutability | • `.gitignore` ignoring `tasks/` and build artifacts.<br>• Comprehensive GitHub Actions CI workflow (lint-and-typecheck, security-and-logging-audit, OpenAPI 3.1 sync, test-suites).<br>• Full `.ai` context overhaul and `GEMINI.md` aligned with backend concepts.<br>• PostgreSQL 16 schema with strict tenant isolation, immutable version tables, tag pointers, and an internal audit ledger.<br>• PgBouncer integration verifying Simple Protocol Mode via `jackc/pgx/v5`.<br>• Core gRPC/REST management APIs for prompt versioning and schema registration. | 🟢 Completed |
-| **Phase 2: In-Process Engine (`go-prompt-sdk`)** | Weeks 3–4 | Compiler, Buffer Pools & Dialects | • Implementation of `go-prompt-sdk` featuring `sync.Pool` zero-allocation string interpolation.<br>• Dialect adapters for Anthropic XML, Meta Llama-3 special tokens, and standard JSON formats.<br>• Tokenizer budgeting hooks calculating framing overhead before interpolation.<br>• Unit test suite & memory benchmark validation ($P99 \le 0.5$ms, 0 heap escapes across 50 KB context blocks). | ⚪ Pending |
+| **Phase 2: In-Process Engine (`go-prompt-sdk`)** | Weeks 3–4 | Compiler, Buffer Pools & Dialects | • Implementation of `go-prompt-sdk` featuring `sync.Pool` zero-allocation string interpolation.<br>• Dialect adapters for Anthropic XML, Meta Llama-3 special tokens, and standard JSON formats.<br>• Tokenizer budgeting hooks calculating framing overhead before interpolation.<br>• Unit test suite & memory benchmark validation ($P99 \le 0.5$ms, 0 heap escapes across 50 KB context blocks). | 🟢 Completed |
 | **Phase 3: Cache Invalidation & Orchestrator Wiring** | Weeks 5–6 | Redis Pub/Sub & SDK Synchronization | • Multi-instance cache invalidation bus via Redis Pub/Sub (`channel:prompt:invalidation`).<br>• Embedded SDK integration into `rag-search-orchestrator` pipeline.<br>• Benchmark validation: $<0.5$ms rendering times and $<500$ms pointer propagation. | ⚪ Pending |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Fault Tolerance & Release Gating | • Chaos testing: killing registry pods while validating uninterrupted SDK in-memory rendering.<br>• Allocation profiling verifying zero memory accumulation on 10,000 RPS orchestrator loads.<br>• Production deployment via Helm and canary cutover. | ⚪ Pending |
 
@@ -63,6 +63,19 @@
     - Implemented Protobuf v3 contracts & gRPC server (`proto/v1/`, `internal/transport/grpc/prompt_admin_server.go`), HTTP REST & OpenAPI 3.1 Doc API router (`internal/transport/http/router.go`), control plane server entry point (`cmd/prompt-registry-server/main.go`), SDK scaffold (`pkg/promptsdk/`), and unit/integration/benchmark test suites (`test/unit/...`, `test/integration/...`).
   - **Phase 1 Code Review Remediation & Hardening**:
     - Enforced verified HS256 Bearer JWT authentication (`iss`, `exp`, `tenant_id` claims) across gRPC and HTTP administrative endpoints, bounded idempotency-key reservations with SHA-256 payload fingerprinting (`422 Unprocessable Entity` on mismatch), explicit `ALLOW_IN_MEMORY_STORE=true` opt-in, concurrent HTTP/gRPC graceful shutdown with forced gRPC stop on timeout, `pg_advisory_xact_lock` migration serialization, string-encoded JSONB query arguments for PgBouncer simple protocol, race-free L2 tag resolution updates, RESP `io.ReadFull` bulk-string reads, remote-only L2 lookups when Redis is configured, distinct `"json"` gRPC codec subtype registration, `{{{x}}}` and missing-key handling in `pkg/promptsdk`, and 100% Go docstring coverage.
+  - **Phase 2 Implementation Plan Pressure-Test & Hardening (`prompts/phase-2-in-process-engine-go-prompt-sdk.md`)**:
+    - Added `ResolveTagResponse.schema_id` parity across Protobuf v3, OpenAPI 3.1, HTTP, and gRPC so tag-resolved renders (`@production`) bind registered JSON output schemas in `DIALECT_OPENAI_STANDARD`.
+    - Specified two-tier L1 cache indirection (`L1_tag` pointer $\to$ `L1_version` immutable pre-compiled AST + `JSONSchema`) with zero-allocation composite struct lookup keys (`0 allocs/op` on cache hits) and bidirectional `name <-> UUID` alias invalidation (supporting Runbook 1 name-based pointer rollbacks and UUID-based Pub/Sub events).
+    - Specified pre-compiled AST segment slices (`CompiledTemplate`) interpolating variables across `SystemPrompt`, `PersonaOverrides`, `FewShotExemplars`, and `Messages`, plus pre-serialized `response_format` JSON schema envelopes.
+    - Added idempotent Anthropic `<context>` / `<query>` XML tag framing (preventing `<context><context>` duplication), zero-allocation streaming tokenizer with dialect escaping inflation compensation, singleflight request coalescing for 10,000 RPS thundering-herd protection, cooldown-protected stale-while-offline serving, and the canonical `test/sdk/` benchmark suite.
+  - **Phase 2 In-Process Engine (`go-prompt-sdk`) Implementation**:
+    - Implemented streaming `Tokenizer` interface and `CL100KTokenizer` subword estimator (`pkg/promptsdk/tokenizer/budget_guard.go`) with zero-allocation `BudgetGuard` calculating dialect framing overhead, UTF-8 rune boundary context truncation, and edge-case token ceiling enforcement.
+    - Implemented deterministic multi-dialect adapters: Anthropic XML (`pkg/promptsdk/dialects/anthropic.go`) with idempotent `<context>`/`<query>` wrapping and XML delimiter breakout escaping, Meta Llama-3 (`pkg/promptsdk/dialects/llama.go`) with header generation and control token neutralization, and OpenAI/Mistral (`pkg/promptsdk/dialects/standard.go`) with zero-allocation streaming JSON escaping and pre-serialized `response_format` JSON schema tail attachment.
+    - Implemented `CompiledTemplate` pre-parsed representation and zero-allocation pooled compiler (`pkg/promptsdk/compiler.go`) supporting `opts.Persona` resolution, full AST variable binding, and boundary-fusion verification.
+    - Implemented thread-safe two-tier L1 cache (`pkg/promptsdk/cache.go`) with composite struct keys (`versionCacheKey`, `tagCacheKey`), bidirectional `name <-> UUID` alias tracking, 5-minute fallback tag TTL, and stale-while-offline resilience.
+    - Implemented embedded `Client` (`pkg/promptsdk/client.go`) with per-key singleflight coalescing, Bearer JWT metadata auth, Redis TCP RESP and in-process Pub/Sub listener, and Prometheus metrics exposition (`prompt_sdk_render_duration_seconds`, `prompt_sdk_cache_hit_ratio`, `prompt_sdk_pubsub_connected`).
+    - Added `schema_id` parity to `ResolveTagResponse` across `proto/v1/prompt_service.proto`, `proto/v1/prompt_service_grpc.go`, `internal/transport/grpc/prompt_admin_server.go`, `internal/transport/http/router.go`, `openapi/openapi.yaml`, and `.ai/doc-api.md`.
+    - Implemented comprehensive test suites: `pkg/promptsdk/sdk_test.go`, `test/unit/phase2_sdk_test.go`, and canonical `test/sdk/sdk_benchmark_test.go` verifying 0 allocs/op across 50 KB context blocks, P99 render latency, and concurrent pointer switches.
 
 ---
 
