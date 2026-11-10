@@ -513,7 +513,7 @@ components:
 
     ResolveTagResponse:
       type: object
-      required: [template_id, tag, version, ast]
+      required: [template_id, tag, version, ast, schema_id]
       properties:
         template_id:
           type: string
@@ -526,6 +526,9 @@ components:
           example: 2
         ast:
           $ref: '#/components/schemas/TemplateAST'
+        schema_id:
+          type: string
+          format: uuid
 
     TemplateResponse:
       type: object
@@ -795,6 +798,7 @@ message ResolveTagResponse {
   string tag = 2;
   uint32 version = 3;
   TemplateAST ast = 4;
+  string schema_id = 5;
 }
 
 message GetTemplateVersionRequest {
@@ -1032,9 +1036,11 @@ const (
 )
 
 type RenderOptions struct {
-    TargetDialect DialectType
-    Variables     map[string]string
-    MaxTokens     int
+    TargetDialect   DialectType
+    Variables       map[string]string
+    MaxTokens       int
+    Persona         string
+    StrictVariables bool
 }
 
 type PromptSDK interface {
@@ -1049,11 +1055,17 @@ type PromptSDK interface {
     Close() error
 }
 
-// Pooled Buffer Helpers (Phase 1 Baseline):
+// Phase 2 In-Process Engine & Pooled Buffer Helpers:
 // - AcquireBuffer() *bytes.Buffer
 // - ReleaseBuffer(buf *bytes.Buffer)
 // - InterpolateIntoBuffer(dst *bytes.Buffer, pattern string, vars map[string]string)
 // - InterpolateIntoBufferChecked(dst *bytes.Buffer, pattern string, vars map[string]string) error
+// - CompileTemplateAST(templateID, templateName string, version int, ast TemplateAST, schema *SchemaContract) (*CompiledTemplate, error)
+// - CompileIntoBuffer(dst *bytes.Buffer, compiled *CompiledTemplate, opts RenderOptions, guard *tokenizer.BudgetGuard) error
+// - NewClient(cfg ClientConfig) (*Client, error)
+// - (*Client).RenderToBuffer(ctx context.Context, dst *bytes.Buffer, templateID string, tagOrVersion string, opts RenderOptions) error
+// - (*Client).PreloadVersion(templateID, templateName string, version int, ast TemplateAST, schema *SchemaContract) (*CompiledTemplate, error)
+// - (*Client).PreloadTag(templateID, templateName, tag string, version int, ast TemplateAST, schema *SchemaContract) (*CompiledTemplate, error)
 ```
 
 ---

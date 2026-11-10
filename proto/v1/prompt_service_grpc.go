@@ -155,6 +155,7 @@ type ResolveTagResponse struct {
 	Tag        string       `json:"tag,omitempty"`
 	Version    uint32       `json:"version,omitempty"`
 	Ast        *TemplateAST `json:"ast,omitempty"`
+	SchemaId   string       `json:"schema_id,omitempty"`
 }
 
 // GetTemplateVersionRequest is the request message for GetTemplateVersion.

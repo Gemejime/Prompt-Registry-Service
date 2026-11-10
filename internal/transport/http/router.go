@@ -956,6 +956,7 @@ type resolveTagHTTPResponse struct {
 	Tag        string             `json:"tag"`
 	Version    int                `json:"version"`
 	AST        entity.TemplateAST `json:"ast"`
+	SchemaID   string             `json:"schema_id"`
 }
 
 // handleResolveTag handles GET /v1/templates/{id}/tags/{tag}.
@@ -977,6 +978,7 @@ func (r *Router) handleResolveTag(w http.ResponseWriter, req *http.Request) {
 		Tag:        tag,
 		Version:    ver.Version,
 		AST:        ver.RawAST,
+		SchemaID:   ver.SchemaID,
 	})
 }
 

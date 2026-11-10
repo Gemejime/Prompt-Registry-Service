@@ -482,6 +482,7 @@ func (s *PromptAdminServer) ResolveTag(ctx context.Context, req *promptv1.Resolv
 		Tag:        req.Tag,
 		Version:    uint32(ver.Version),
 		Ast:        entityToProtoAST(ver.RawAST),
+		SchemaId:   ver.SchemaID,
 	}, nil
 }
 

@@ -73,6 +73,7 @@ message ResolveTagResponse {
   string tag = 2;
   uint32 version = 3;
   TemplateAST ast = 4;
+  string schema_id = 5;
 }
 
 message GetTemplateVersionRequest {

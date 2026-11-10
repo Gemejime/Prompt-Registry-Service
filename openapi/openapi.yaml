@@ -465,7 +465,7 @@ components:
 
     ResolveTagResponse:
       type: object
-      required: [template_id, tag, version, ast]
+      required: [template_id, tag, version, ast, schema_id]
       properties:
         template_id:
           type: string
@@ -478,6 +478,9 @@ components:
           example: 2
         ast:
           $ref: '#/components/schemas/TemplateAST'
+        schema_id:
+          type: string
+          format: uuid
 
     TemplateResponse:
       type: object
