@@ -178,8 +178,7 @@ func BenchmarkRender50KBContext(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf := AcquireBuffer()
 		InterpolateIntoBuffer(buf, pattern, vars)
 		if buf.Len() < 50000 {
@@ -238,8 +237,7 @@ func BenchmarkClientRender50KBAllDialects(b *testing.B) {
 				Variables:     vars,
 			}
 			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				buf := AcquireBuffer()
 				if err := client.RenderToBuffer(ctx, buf, "rag-financial-summary", "@production", opts); err != nil {
 					b.Fatalf("RenderToBuffer failed: %v", err)

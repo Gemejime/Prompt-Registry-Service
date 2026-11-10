@@ -310,10 +310,8 @@ func BenchmarkPipelineRenderHotPath(b *testing.B) {
 		b.Fatalf("warmup render failed: %v", err)
 	}
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf.Reset()
 		if err := client.RenderToBuffer(ctx, buf, templateID, "@production", opts); err != nil {
 			b.Fatalf("render failed: %v", err)
