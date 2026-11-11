@@ -112,6 +112,10 @@
       - Created production Helm chart (`deployments/helm/rag-prompt-registry/`) with `Chart.yaml`, `values.yaml`, `deployment.yaml`, `service.yaml`, `poddisruptionbudget.yaml`, `configmap.yaml`, `secret.yaml`, `servicemonitor.yaml`, `prometheusrule.yaml`, `rollout.yaml`, and `analysistemplate.yaml`.
       - Created GitOps ArgoCD `Application` manifest (`deployments/gitops/argocd-application.yaml`).
       - Documented deployment specifications, Prometheus alerting matrix, and Runbook 3 in `.ai/doc-api.md` and `.ai/progress-tracker.md`.
+- **12-Factor Environment & `.env` Synchronization**:
+  - Created `internal/config/env.go` implementing zero-dependency `.env` / `ENV_FILE` loading (without overwriting existing OS environment variables), `ParseLogLevel`, and typed env helpers (`GetEnv`, `GetEnvInt`, `GetEnvBool`, `ParseCSV`).
+  - Wired `.env` loading, `LOG_LEVEL`, `CONN_EXEC_MODE` (via `postgres.ParseQueryExecMode` defaulting to `simple_protocol` per ADR-003), and `OPENAPI_SPEC_PATH` into `cmd/prompt-registry-server/main.go`, `internal/infrastructure/persistence/postgres/pool.go`, `pkg/promptsdk/client.go`, and `pkg/orchestrator/pipeline.go`.
+  - Updated `.env.example` and Helm `configmap.yaml`/`values.yaml` with `JWT_HMAC_SECRET`, `JWT_ISSUER`, and `OPENAPI_SPEC_PATH`, synchronized `.ai/doc-api.md`, and added `test/unit/config_env_test.go`.
 
 ---
 

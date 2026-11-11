@@ -1191,8 +1191,33 @@ type PromptSDK interface {
 - **Control Plane Sizing**: `replicas: 2`, `cpu: {requests: 100m, limits: 500m}`, `memory: {requests: 64Mi, limits: 128Mi}`, `PodDisruptionBudget` `minAvailable: 1`.
 - **Data Plane Reference Sizing**: `cpu: {requests: 1000m, limits: 4000m}`, `memory: {requests: 1Gi, limits: 2Gi}`.
 - **Hardening & Storage**: `runAsNonRoot: true`, `runAsUser: 65532`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault`, `/tmp` `emptyDir` (`16Mi`), configurable `podAntiAffinity` (`soft` default / `hard` toggle).
-- **Networking & Persistence Env**: `HTTP_PORT=8080`, `GRPC_PORT=9090`, `CONN_EXEC_MODE=simple_protocol` (ADR-003 PgBouncer compatibility), `REDIS_INVALIDATION_CHANNEL=channel:prompt:invalidation` (ADR-002).
+- **Networking & Persistence Env**: `HTTP_PORT=8080`, `GRPC_PORT=9090`, `OPENAPI_SPEC_PATH=openapi/openapi.yaml`, `CONN_EXEC_MODE=simple_protocol` (ADR-003 PgBouncer compatibility), `REDIS_INVALIDATION_CHANNEL=channel:prompt:invalidation` (ADR-002), `JWT_ISSUER=rag-prompt-registry-auth`.
 - **Probes**: Liveness `GET /healthz` and Readiness `GET /ready` (`initialDelaySeconds: 5`, `periodSeconds: 10`).
+
+### Runtime Environment Variables (`.env.example` & `internal/config/env.go`)
+At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` loads `.env` (or the path specified by `ENV_FILE`) without overwriting variables already set in the process environment:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `HTTP_PORT` | `8080` | Control plane HTTP REST, OpenAPI Doc API, probe, and `/metrics` port |
+| `GRPC_PORT` | `9090` | Control plane gRPC management server port |
+| `OPENAPI_SPEC_PATH` | `openapi/openapi.yaml` | Filesystem path to the OpenAPI 3.1 YAML specification |
+| `POSTGRES_DSN` | _empty_ | PostgreSQL 16+ / PgBouncer connection URI |
+| `CONN_EXEC_MODE` | `simple_protocol` | `pgx` query execution mode (`simple_protocol`, `exec`, `cache_statement`, `cache_describe`, `describe_exec`; ADR-003 requires `simple_protocol`) |
+| `ALLOW_IN_MEMORY_STORE` | `false` | Explicit opt-in for non-durable in-memory storage when `POSTGRES_DSN` is unset |
+| `POSTGRES_MAX_CONNS` | `25` | Maximum PostgreSQL pool connections |
+| `POSTGRES_MIN_CONNS` | `2` | Minimum PostgreSQL pool connections |
+| `POSTGRES_AUTO_MIGRATE` | `true` | Apply embedded SQL migrations on startup |
+| `REDIS_ADDRS` | _empty_ | Comma-separated Redis 7.2 Cluster / Standalone addresses |
+| `REDIS_PASSWORD` | _empty_ | Redis authentication password |
+| `REDIS_DB` | `0` | Redis database index |
+| `REDIS_INVALIDATION_CHANNEL` | `channel:prompt:invalidation` | Redis Pub/Sub invalidation channel (ADR-002) |
+| `JWT_HMAC_SECRET` | _dev default_ | HS256 signing/verification secret for control plane and SDK Bearer JWTs |
+| `JWT_ISSUER` | `rag-prompt-registry-auth` | Expected `iss` claim for Bearer JWTs |
+| `ADMIN_WRITE_RATE_LIMIT_RPS` | `50` | Token-bucket refill rate (requests/sec) for administrative writes |
+| `ADMIN_WRITE_RATE_LIMIT_BURST` | `100` | Token-bucket burst capacity for administrative writes |
+| `DEFAULT_TENANT_ID` | `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11` | Default tenant UUID fallback |
+| `LOG_LEVEL` | `INFO` | Structured JSON `slog` level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 
 ### Prometheus Alerting Matrix (`templates/prometheusrule.yaml`)
 | Alert Name | PromQL Expression | Window (`for`) | Severity | Trigger Condition |
