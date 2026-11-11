@@ -80,6 +80,7 @@ podDisruptionBudget:
 config:
   httpPort: "8080"
   grpcPort: "9090"
+  openAPISpecPath: "openapi/openapi.yaml"
   connExecMode: "simple_protocol"
   allowInMemoryStore: "false"
   postgresMaxConns: "25"
@@ -88,6 +89,7 @@ config:
   redisAddrs: "redis-cluster:6379"
   redisDB: "0"
   redisInvalidationChannel: "channel:prompt:invalidation"
+  jwtIssuer: "rag-prompt-registry-auth"
   adminWriteRateLimitRPS: "50"
   adminWriteRateLimitBurst: "100"
   defaultTenantID: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"

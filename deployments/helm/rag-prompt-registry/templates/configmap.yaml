@@ -7,6 +7,7 @@ metadata:
 data:
   HTTP_PORT: {{ .Values.config.httpPort | quote }}
   GRPC_PORT: {{ .Values.config.grpcPort | quote }}
+  OPENAPI_SPEC_PATH: {{ .Values.config.openAPISpecPath | quote }}
   CONN_EXEC_MODE: {{ .Values.config.connExecMode | quote }}
   ALLOW_IN_MEMORY_STORE: {{ .Values.config.allowInMemoryStore | quote }}
   POSTGRES_MAX_CONNS: {{ .Values.config.postgresMaxConns | quote }}
@@ -15,6 +16,7 @@ data:
   REDIS_ADDRS: {{ .Values.config.redisAddrs | quote }}
   REDIS_DB: {{ .Values.config.redisDB | quote }}
   REDIS_INVALIDATION_CHANNEL: {{ .Values.config.redisInvalidationChannel | quote }}
+  JWT_ISSUER: {{ .Values.config.jwtIssuer | quote }}
   ADMIN_WRITE_RATE_LIMIT_RPS: {{ .Values.config.adminWriteRateLimitRPS | quote }}
   ADMIN_WRITE_RATE_LIMIT_BURST: {{ .Values.config.adminWriteRateLimitBurst | quote }}
   DEFAULT_TENANT_ID: {{ .Values.config.defaultTenantID | quote }}

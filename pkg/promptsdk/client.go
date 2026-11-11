@@ -160,7 +160,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	logger := cfg.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseSDKLogLevel(os.Getenv("LOG_LEVEL"))}))
 	}
 
 	nodeID := strings.TrimSpace(cfg.NodeID)
@@ -233,6 +233,20 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+// parseSDKLogLevel converts a LOG_LEVEL environment value to slog.Level, defaulting to INFO.
+func parseSDKLogLevel(raw string) slog.Level {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // mintServiceJWT signs a 24-hour HS256 service token for control plane read RPCs.

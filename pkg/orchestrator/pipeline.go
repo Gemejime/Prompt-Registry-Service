@@ -51,7 +51,7 @@ func NewRAGPipeline(cfg PipelineConfig) (*RAGPipeline, error) {
 	}
 	logger := cfg.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parsePipelineLogLevel(os.Getenv("LOG_LEVEL"))}))
 	}
 	metrics := cfg.Metrics
 	if metrics == nil {
@@ -67,6 +67,20 @@ func NewRAGPipeline(cfg PipelineConfig) (*RAGPipeline, error) {
 		metrics:     metrics,
 		logger:      logger,
 	}, nil
+}
+
+// parsePipelineLogLevel converts a LOG_LEVEL environment value to slog.Level, defaulting to INFO.
+func parsePipelineLogLevel(raw string) slog.Level {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // PromptSDK returns the underlying embedded PromptSDK.

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,6 +19,7 @@ import (
 
 	"rag-prompt-registry-service/internal/application/command"
 	"rag-prompt-registry-service/internal/application/query"
+	"rag-prompt-registry-service/internal/config"
 	"rag-prompt-registry-service/internal/domain/repository"
 	"rag-prompt-registry-service/internal/infrastructure/cache/redis"
 	"rag-prompt-registry-service/internal/infrastructure/persistence/postgres"
@@ -52,28 +52,19 @@ func (sr *serverReadiness) CheckRedis(ctx context.Context) error {
 	return nil
 }
 
-// getEnv returns the trimmed environment variable value for key or fallback if unset.
-func getEnv(key, fallback string) string {
-	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-		return val
-	}
-	return fallback
-}
-
-// getEnvInt returns the integer environment variable value for key or fallback if unset or invalid.
-func getEnvInt(key string, fallback int) int {
-	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-		if parsed, err := strconv.Atoi(val); err == nil {
-			return parsed
-		}
-	}
-	return fallback
-}
-
 // main initializes dependencies, starts the HTTP and gRPC control plane servers, and handles graceful shutdown.
 func main() {
+	if err := config.LoadDotEnv(".env"); err != nil {
+		errLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+		errLogger.Error("failed to load environment file",
+			slog.String("error_code", "CONFIG_DOTENV_LOAD_FAILED"),
+			slog.String("detail", err.Error()),
+		)
+		os.Exit(1)
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
-		httpPort := getEnv("HTTP_PORT", "8080")
+		httpPort := config.GetEnv("HTTP_PORT", "8080")
 		client := &http.Client{Timeout: 2 * time.Second}
 		resp, err := client.Get("http://127.0.0.1:" + httpPort + "/healthz")
 		if err != nil {
@@ -86,25 +77,32 @@ func main() {
 		os.Exit(0)
 	}
 
+	rawLogLevel := config.GetEnv("LOG_LEVEL", "INFO")
+	logLevel, validLogLevel := config.ParseLogLevel(rawLogLevel)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
+	if !validLogLevel {
+		logger.Warn("unrecognized LOG_LEVEL value, defaulting to INFO", slog.String("log_level", rawLogLevel))
+	}
 
-	httpPort := getEnv("HTTP_PORT", "8080")
-	grpcPort := getEnv("GRPC_PORT", "9090")
+	httpPort := config.GetEnv("HTTP_PORT", "8080")
+	grpcPort := config.GetEnv("GRPC_PORT", "9090")
+	openAPIPath := config.GetEnv("OPENAPI_SPEC_PATH", "openapi/openapi.yaml")
 	pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
-	allowInMemoryStore := strings.EqualFold(getEnv("ALLOW_IN_MEMORY_STORE", "false"), "true")
-	pgMaxConns := int32(getEnvInt("POSTGRES_MAX_CONNS", 25))
-	pgMinConns := int32(getEnvInt("POSTGRES_MIN_CONNS", 2))
-	autoMigrate := strings.EqualFold(getEnv("POSTGRES_AUTO_MIGRATE", "true"), "true")
+	connExecMode := config.GetEnv("CONN_EXEC_MODE", "simple_protocol")
+	allowInMemoryStore := config.GetEnvBool("ALLOW_IN_MEMORY_STORE", false)
+	pgMaxConns := int32(config.GetEnvInt("POSTGRES_MAX_CONNS", 25))
+	pgMinConns := int32(config.GetEnvInt("POSTGRES_MIN_CONNS", 2))
+	autoMigrate := config.GetEnvBool("POSTGRES_AUTO_MIGRATE", true)
 
-	redisAddrs := strings.Split(getEnv("REDIS_ADDRS", ""), ",")
-	redisDB := getEnvInt("REDIS_DB", 0)
-	invalidationChan := getEnv("REDIS_INVALIDATION_CHANNEL", redis.DefaultInvalidationChannel)
-	defaultTenant := getEnv("DEFAULT_TENANT_ID", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
-	writeRPS := float64(getEnvInt("ADMIN_WRITE_RATE_LIMIT_RPS", 50))
-	writeBurst := getEnvInt("ADMIN_WRITE_RATE_LIMIT_BURST", 100)
+	redisAddrs := config.ParseCSV(config.GetEnv("REDIS_ADDRS", ""))
+	redisDB := config.GetEnvInt("REDIS_DB", 0)
+	invalidationChan := config.GetEnv("REDIS_INVALIDATION_CHANNEL", redis.DefaultInvalidationChannel)
+	defaultTenant := config.GetEnv("DEFAULT_TENANT_ID", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+	writeRPS := float64(config.GetEnvInt("ADMIN_WRITE_RATE_LIMIT_RPS", 50))
+	writeBurst := config.GetEnvInt("ADMIN_WRITE_RATE_LIMIT_BURST", 100)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -115,10 +113,16 @@ func main() {
 	)
 
 	if pgDSN != "" {
+		if !strings.EqualFold(connExecMode, "simple_protocol") {
+			logger.Warn("CONN_EXEC_MODE is not simple_protocol; PgBouncer transaction pooling requires simple_protocol (ADR-003)",
+				slog.String("conn_exec_mode", connExecMode),
+			)
+		}
 		pool, err := postgres.NewPool(ctx, postgres.PoolOptions{
-			DSN:      pgDSN,
-			MaxConns: pgMaxConns,
-			MinConns: pgMinConns,
+			DSN:          pgDSN,
+			ConnExecMode: connExecMode,
+			MaxConns:     pgMaxConns,
+			MinConns:     pgMinConns,
 		})
 		if err != nil {
 			logger.Error("failed to initialize postgres pool", slog.String("error_code", "DB_INIT_FAILED"))
@@ -170,7 +174,7 @@ func main() {
 		Invalidator:    invalidator,
 		Readiness:      &serverReadiness{pgPool: pgPool, redisClient: l2Cache},
 		DefaultTenant:  defaultTenant,
-		OpenAPIPath:    "openapi/openapi.yaml",
+		OpenAPIPath:    openAPIPath,
 		WriteRateRPS:   writeRPS,
 		WriteRateBurst: writeBurst,
 		Logger:         logger,

@@ -19,6 +19,7 @@ import (
 // PoolOptions holds configuration parameters for the PostgreSQL connection pool.
 type PoolOptions struct {
 	DSN               string
+	ConnExecMode      string
 	MaxConns          int32
 	MinConns          int32
 	MaxConnLifetime   time.Duration
@@ -26,12 +27,36 @@ type PoolOptions struct {
 	HealthCheckPeriod time.Duration
 }
 
-// BuildPoolConfig parses the PostgreSQL connection string and explicitly configures
-// ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol (ADR-003)
+// ParseQueryExecMode maps the CONN_EXEC_MODE configuration string to a pgx.QueryExecMode.
+// Empty or "simple_protocol" selects pgx.QueryExecModeSimpleProtocol (ADR-003 PgBouncer compatibility).
+func ParseQueryExecMode(mode string) (pgx.QueryExecMode, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "simple_protocol":
+		return pgx.QueryExecModeSimpleProtocol, nil
+	case "exec":
+		return pgx.QueryExecModeExec, nil
+	case "cache_statement":
+		return pgx.QueryExecModeCacheStatement, nil
+	case "cache_describe":
+		return pgx.QueryExecModeCacheDescribe, nil
+	case "describe_exec":
+		return pgx.QueryExecModeDescribeExec, nil
+	default:
+		return 0, fmt.Errorf("unsupported CONN_EXEC_MODE %q (expected simple_protocol, exec, cache_statement, cache_describe, or describe_exec)", mode)
+	}
+}
+
+// BuildPoolConfig parses the PostgreSQL connection string and configures
+// ConnConfig.DefaultQueryExecMode (defaulting to pgx.QueryExecModeSimpleProtocol per ADR-003)
 // to prevent prepared statement collisions across PgBouncer transaction pooling.
 func BuildPoolConfig(opts PoolOptions) (*pgxpool.Config, error) {
 	if strings.TrimSpace(opts.DSN) == "" {
 		return nil, fmt.Errorf("postgres DSN is required")
+	}
+
+	execMode, err := ParseQueryExecMode(opts.ConnExecMode)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg, err := pgxpool.ParseConfig(opts.DSN)
@@ -39,8 +64,8 @@ func BuildPoolConfig(opts PoolOptions) (*pgxpool.Config, error) {
 		return nil, fmt.Errorf("failed to parse postgres configuration: %s", SanitizeDSNError(err, opts.DSN))
 	}
 
-	// ADR-003 Invariant 6: Force Simple Protocol Mode for PgBouncer transaction pooling compatibility.
-	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	// ADR-003 Invariant 6: Default to Simple Protocol Mode for PgBouncer transaction pooling compatibility.
+	cfg.ConnConfig.DefaultQueryExecMode = execMode
 
 	if opts.MaxConns > 0 {
 		cfg.MaxConns = opts.MaxConns
