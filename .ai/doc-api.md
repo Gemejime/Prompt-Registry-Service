@@ -1226,6 +1226,8 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
 - **Sync & Pre-Commit Drift Gate (`scripts/sync_env_to_deployments.py`, `.git/hooks/pre-commit`)**:
   - `python scripts/sync_env_to_deployments.py --sync` updates `deployments/helm/rag-prompt-registry/values.yaml` (`.Values.env`) from `.env.prod` while excluding sensitive keys (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `DSN`, `CREDENTIAL`, `PRIVATE`) and preserving `secretName` and all other Helm blocks.
   - `python scripts/sync_env_to_deployments.py --check-only` verifies zero drift (exits `1` on mismatch), enforced locally by `.git/hooks/pre-commit`.
+- **CI/CD Secret Injection (`.github/workflows/deploy.yml` & `deployments/SECRET_MANAGEMENT.md`)**:
+  - Sensitive credentials (`POSTGRES_DSN`, `JWT_HMAC_SECRET`, `REDIS_PASSWORD`) are injected out-of-band into Kubernetes Secret `rag-prompt-registry-service-secrets` from GitHub Environment Secrets (`staging` / `production`) via `--from-env-file` without storing credentials in `values.yaml` or Helm release history, passing `--set env.secretName` and `--set secrets.existingSecret` to Helm.
 
 ### Prometheus Alerting Matrix (`templates/prometheusrule.yaml`)
 | Alert Name | PromQL Expression | Window (`for`) | Severity | Trigger Condition |

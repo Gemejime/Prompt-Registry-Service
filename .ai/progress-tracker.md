@@ -120,6 +120,9 @@
   - Converted `deployments/helm/rag-prompt-registry/templates/configmap.yaml` to dynamically range over `.Values.env` (preserving `HTTP_PORT` / `GRPC_PORT` fallbacks and ignoring `secretName` and `nil` values) and updated `values.yaml` and `_helpers.tpl` / `secret.yaml` / `deployment.yaml` / `rollout.yaml` (`checksum/config` rolling-restart trigger + `env.secretName` support).
   - Created `scripts/sync_env_to_deployments.py` (`--sync` and `--check-only`) excluding sensitive keys (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `DSN`, `CREDENTIAL`, `PRIVATE`) and preserving `secretName` and all top-level Helm blocks.
   - Installed `.git/hooks/pre-commit` to block commits on `.env.prod` vs `values.yaml` drift, documented `.env` vs `.env.prod` semantics in `.env.example` and `.ai/doc-api.md`, and synced `deployments/helm/rag-prompt-registry/values.yaml`.
+- **CI/CD Secret Injection & Secret Management Documentation**:
+  - Added `.github/workflows/deploy.yml` implementing GitHub Actions Environment secret validation, out-of-band Kubernetes Secret injection (`--from-env-file` -> `rag-prompt-registry-service-secrets`), secret-free Helm deployment (`--set env.secretName` / `secrets.existingSecret`), secret-rotation rollout restarts, and `$RUNNER_TEMP` credential cleanup (without touching `.env.prod`).
+  - Created `deployments/SECRET_MANAGEMENT.md` documenting configuration vs. secret boundaries, excluded key markers, GitHub Actions Environment setup, External Secrets Operator / Vault integration, manual bootstrap, and rotation runbooks, and synced `.ai/doc-api.md`.
 
 ---
 
