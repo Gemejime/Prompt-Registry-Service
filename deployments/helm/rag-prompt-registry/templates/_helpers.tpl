@@ -52,8 +52,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Secret name helper.
 */}}
 {{- define "rag-prompt-registry.secretName" -}}
+{{- $envSecret := "" -}}
+{{- if .Values.env -}}
+{{- $envSecret = get .Values.env "secretName" | default "" -}}
+{{- end -}}
 {{- if .Values.secrets.existingSecret }}
 {{- .Values.secrets.existingSecret }}
+{{- else if $envSecret }}
+{{- $envSecret }}
 {{- else }}
 {{- printf "%s-secret" (include "rag-prompt-registry.fullname" .) }}
 {{- end }}

@@ -16,7 +16,11 @@ spec:
         {{- include "rag-prompt-registry.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- if not .Values.secrets.existingSecret }}
+        {{- $envSecret := "" }}
+        {{- if .Values.env }}
+        {{- $envSecret = get .Values.env "secretName" | default "" }}
+        {{- end }}
+        {{- if and (not .Values.secrets.existingSecret) (not $envSecret) }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
     spec:

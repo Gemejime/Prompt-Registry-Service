@@ -76,24 +76,25 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
-# Application 12-Factor Environment Configuration (ConfigMap)
-config:
-  httpPort: "8080"
-  grpcPort: "9090"
-  openAPISpecPath: "openapi/openapi.yaml"
-  connExecMode: "simple_protocol"
-  allowInMemoryStore: "false"
-  postgresMaxConns: "25"
-  postgresMinConns: "2"
-  postgresAutoMigrate: "true"
-  redisAddrs: "redis-cluster:6379"
-  redisDB: "0"
-  redisInvalidationChannel: "channel:prompt:invalidation"
-  jwtIssuer: "rag-prompt-registry-auth"
-  adminWriteRateLimitRPS: "50"
-  adminWriteRateLimitBurst: "100"
-  defaultTenantID: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
-  logLevel: "INFO"
+# Application 12-Factor Environment Configuration (ConfigMap - synced from .env.prod)
+env:
+  secretName: ""
+  HTTP_PORT: "8080"
+  GRPC_PORT: "9090"
+  OPENAPI_SPEC_PATH: "openapi/openapi.yaml"
+  CONN_EXEC_MODE: "simple_protocol"
+  ALLOW_IN_MEMORY_STORE: "false"
+  POSTGRES_MAX_CONNS: "25"
+  POSTGRES_MIN_CONNS: "2"
+  POSTGRES_AUTO_MIGRATE: "true"
+  REDIS_ADDRS: "localhost:6379"
+  REDIS_DB: "0"
+  REDIS_INVALIDATION_CHANNEL: "channel:prompt:invalidation"
+  JWT_ISSUER: "rag-prompt-registry-auth"
+  ADMIN_WRITE_RATE_LIMIT_RPS: "50"
+  ADMIN_WRITE_RATE_LIMIT_BURST: "100"
+  DEFAULT_TENANT_ID: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+  LOG_LEVEL: "INFO"
 
 # Credentials (Secret) - override existingSecret in production via Vault/ExternalSecrets
 secrets:
