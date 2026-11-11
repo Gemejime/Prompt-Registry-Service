@@ -1,0 +1,165 @@
+name: Deploy Control Plane (Secret Injection & Helm)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target deployment environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      image_tag:
+        description: Container image tag to deploy (defaults to Chart appVersion if empty)
+        required: false
+        type: string
+        default: ""
+      canary_enabled:
+        description: Enable Argo Rollouts progressive canary strategy
+        required: false
+        type: boolean
+        default: false
+      namespace:
+        description: Target Kubernetes namespace
+        required: false
+        type: string
+        default: rag-platform
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  helm-lint:
+    name: Validate Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Lint Helm Chart
+        run: helm lint deployments/helm/rag-prompt-registry
+
+  deploy:
+    name: Inject Secrets & Deploy (${{ inputs.environment }})
+    needs: helm-lint
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      RELEASE_NAME: rag-prompt-registry-service
+      CHART_PATH: deployments/helm/rag-prompt-registry
+      K8S_NAMESPACE: ${{ inputs.namespace }}
+      K8S_SECRET_NAME: rag-prompt-registry-service-secrets
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Kubectl & Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Validate Required GitHub Secrets
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for var in KUBECONFIG_B64 POSTGRES_DSN JWT_HMAC_SECRET; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Required GitHub Environment secret '$var' is empty or unset."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Configure Kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="$RUNNER_TEMP/kubeconfig"
+          printf '%s' "$KUBECONFIG_B64" | base64 -d > "$KUBECONFIG_PATH"
+          chmod 600 "$KUBECONFIG_PATH"
+          echo "KUBECONFIG=$KUBECONFIG_PATH" >> "$GITHUB_ENV"
+
+      - name: Inject Kubernetes Secret Out-of-Band
+        id: inject_secret
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET }}
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$K8S_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+          SECRET_ENV_FILE="$RUNNER_TEMP/secret.env"
+          umask 077
+          {
+            printf 'POSTGRES_DSN=%s\n' "$POSTGRES_DSN"
+            printf 'REDIS_PASSWORD=%s\n' "${REDIS_PASSWORD:-}"
+            printf 'JWT_HMAC_SECRET=%s\n' "$JWT_HMAC_SECRET"
+          } > "$SECRET_ENV_FILE"
+
+          APPLY_OUT=$(kubectl create secret generic "$K8S_SECRET_NAME" \
+            --namespace "$K8S_NAMESPACE" \
+            --from-env-file="$SECRET_ENV_FILE" \
+            --dry-run=client -o yaml | kubectl apply -f -)
+          echo "$APPLY_OUT"
+
+          rm -f "$SECRET_ENV_FILE"
+
+          if echo "$APPLY_OUT" | grep -qE '(configured|created)'; then
+            echo "secret_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "secret_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy Helm Release (Without Plaintext Secrets in Values)
+        run: |
+          set -euo pipefail
+          HELM_ARGS=(
+            upgrade --install "$RELEASE_NAME" "$CHART_PATH"
+            --namespace "$K8S_NAMESPACE"
+            --create-namespace
+            --set "env.secretName=$K8S_SECRET_NAME"
+            --set "secrets.existingSecret=$K8S_SECRET_NAME"
+            --set "canary.enabled=${{ inputs.canary_enabled }}"
+            --wait
+            --timeout 5m
+          )
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            HELM_ARGS+=(--set "image.tag=${{ inputs.image_tag }}")
+          fi
+          helm "${HELM_ARGS[@]}"
+
+      - name: Rollout Restart on Secret Rotation
+        if: steps.inject_secret.outputs.secret_changed == 'true' && inputs.canary_enabled != true
+        run: |
+          set -euo pipefail
+          kubectl rollout restart "deployment/$RELEASE_NAME" --namespace "$K8S_NAMESPACE"
+          kubectl rollout status "deployment/$RELEASE_NAME" --namespace "$K8S_NAMESPACE" --timeout=5m
+
+      - name: Clean Up Temporary Credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/kubeconfig" "$RUNNER_TEMP/secret.env"
+
