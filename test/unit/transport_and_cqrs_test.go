@@ -261,6 +261,17 @@ func TestRESTControlPlaneLifecycleAndSecuredLogging(t *testing.T) {
 		t.Fatalf("expected final audit action to be TAG_ROLLED_BACK, got %s", audits[4].Action)
 	}
 
+	// Verify /metrics exports prompt_registry_pointer_rollbacks_total == 1 after rollback
+	metricsResp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics failed: %v", err)
+	}
+	metricsBytes, _ := io.ReadAll(metricsResp.Body)
+	_ = metricsResp.Body.Close()
+	if !strings.Contains(string(metricsBytes), "prompt_registry_pointer_rollbacks_total 1") {
+		t.Fatalf("expected prompt_registry_pointer_rollbacks_total 1 on /metrics, got:\n%s", string(metricsBytes))
+	}
+
 	// 6. Cross-Tenant Isolation Check: Tenant B cannot read Tenant A's template
 	resp, _ = doJSONRequest(t, http.MethodGet, ts.URL+"/v1/templates/"+tmplResp.ID+"/versions/1", tenantB, "", nil)
 	if resp.StatusCode != http.StatusNotFound {
