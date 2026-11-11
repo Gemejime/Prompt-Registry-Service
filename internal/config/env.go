@@ -246,4 +246,3 @@ func ParseCSV(raw string) []string {
 	}
 	return out
 }
-
