@@ -1167,9 +1167,57 @@ type PromptSDK interface {
 | :--- | :--- | :--- | :--- |
 | `prompt_sdk_render_duration_seconds` | Histogram | `dialect`, `status` | SDK in-process compilation latency (Target P99 $\le 0.5$ms) |
 | `prompt_registry_mutation_duration_seconds` | Histogram | `operation`, `status` | Control plane write latencies |
+| `prompt_registry_pointer_rollbacks_total` | Counter | _none_ | Semantic tag pointer rollbacks executed (`is_rollback == true`) |
 | `prompt_sdk_cache_hit_ratio` | Gauge | `tier` (L1_version, L1_tag) | Local SDK memory hit ratio (Target $>99.9\%$) |
 | `prompt_invalidation_events_published_total` | Counter | `status` | Redis Pub/Sub eviction signals emitted |
 | `prompt_sdk_pubsub_connected` | Gauge | `node_id` | Orchestrator Pub/Sub connection status (1=healthy, 0=fallback TTL) |
 | `rag_orchestrator_pipeline_duration_seconds` | Histogram | `mode`, `dialect` | End-to-end RAG orchestrator pipeline execution latency |
 | `rag_orchestrator_context_bytes` | Histogram | _none_ | Assembled document chunk context payload size in bytes |
 | `rag_orchestrator_requests_total` | Counter | `status` | Total RAG pipeline requests executed |
+
+---
+
+## 9. Deployment, Containerization & Prometheus Alerting Specifications
+
+### Distroless Container (`deployments/docker/Dockerfile`)
+- **Builder Stage**: `golang:1.26-alpine` compiling `./cmd/prompt-registry-server` with `CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w -X main.version=${VERSION}"`.
+- **Runtime Stage**: `gcr.io/distroless/static-debian12:nonroot`, `WORKDIR /app`, `USER 65532:65532`, `readOnlyRootFilesystem: true` compatible.
+- **Packaged Static Assets**: Copies `openapi/openapi.yaml` to `/app/openapi/openapi.yaml` for `/docs`, `/redoc`, `/api/docs`, and `/openapi.yaml`.
+- **Exposed Ports**: `8080` (HTTP REST, Doc API, `/healthz`, `/ready`, `/metrics`) and `9090` (gRPC Management API).
+- **Container Healthcheck**: Invokes `/app/prompt-registry-server -healthcheck` targeting `GET /healthz`.
+
+### Production Helm Chart (`deployments/helm/rag-prompt-registry/`)
+- **Chart**: `rag-prompt-registry-service` (`apiVersion: v2`).
+- **Control Plane Sizing**: `replicas: 2`, `cpu: {requests: 100m, limits: 500m}`, `memory: {requests: 64Mi, limits: 128Mi}`, `PodDisruptionBudget` `minAvailable: 1`.
+- **Data Plane Reference Sizing**: `cpu: {requests: 1000m, limits: 4000m}`, `memory: {requests: 1Gi, limits: 2Gi}`.
+- **Hardening & Storage**: `runAsNonRoot: true`, `runAsUser: 65532`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault`, `/tmp` `emptyDir` (`16Mi`), configurable `podAntiAffinity` (`soft` default / `hard` toggle).
+- **Networking & Persistence Env**: `HTTP_PORT=8080`, `GRPC_PORT=9090`, `CONN_EXEC_MODE=simple_protocol` (ADR-003 PgBouncer compatibility), `REDIS_INVALIDATION_CHANNEL=channel:prompt:invalidation` (ADR-002).
+- **Probes**: Liveness `GET /healthz` and Readiness `GET /ready` (`initialDelaySeconds: 5`, `periodSeconds: 10`).
+
+### Prometheus Alerting Matrix (`templates/prometheusrule.yaml`)
+| Alert Name | PromQL Expression | Window (`for`) | Severity | Trigger Condition |
+| :--- | :--- | :--- | :--- | :--- |
+| `SDKHighRenderLatency` | `histogram_quantile(0.99, sum(rate(prompt_sdk_render_duration_seconds_bucket[5m])) by (le)) > 0.002` | `5m` | `critical` | SDK in-process P99 render latency exceeds 2ms |
+| `PubSubInvalidationFailure` | `rate(prompt_invalidation_events_published_total{status="error"}[5m]) > 0` | `1m` | `critical` | Registry fails to publish invalidation events to Redis Pub/Sub |
+| `ElevatedPointerRollbacks` | `increase(prompt_registry_pointer_rollbacks_total[15m]) > 0` | `0m` | `warning` | Semantic tag pointer rollback executed within 15m window |
+
+### GitOps ArgoCD & Argo Rollouts (`deployments/gitops/argocd-application.yaml`)
+- **ArgoCD Application**: Automated sync (`prune: true`, `selfHeal: true`) with exponential retry backoff targeting `deployments/helm/rag-prompt-registry`.
+- **Canary Cutover (`canary.enabled: true`)**: Renders `Rollout` + `AnalysisTemplate` with progressive traffic steps (`10%` -> 2m pause + analysis -> `50%` -> 5m pause + analysis -> `100%`), gating on `rate(prompt_invalidation_events_published_total{status="error"}[2m]) == 0`, `rate(prompt_registry_mutation_duration_seconds_count{status="error"}[2m]) == 0`, and zero `ElevatedPointerRollbacks` spikes.
+
+---
+
+## 10. Runbook 3: Progressive Canary Rollout & Automated Abort via Argo Rollouts
+
+1. **Enable Canary Mode**: Set `canary.enabled=true` and update `image.tag` in Helm values (`deployments/helm/rag-prompt-registry/values.yaml`) or ArgoCD parameter overrides.
+2. **Monitor Rollout Progression**:
+   - Inspect live rollout state and canary weights:
+     `kubectl argo rollouts get rollout rag-prompt-registry-service -n rag-platform --watch`
+   - Verify step progression (`10%` canary weight -> 2m pause & Prometheus analysis -> `50%` canary weight -> 5m pause & analysis -> `100%` promotion).
+3. **Evaluate Canary Telemetry**:
+   - Confirm Prometheus `AnalysisRun` queries pass with `0` errors on `prompt_invalidation_events_published_total{status="error"}` and `prompt_registry_mutation_duration_seconds_count{status="error"}`, and zero spikes on `prompt_registry_pointer_rollbacks_total`.
+   - If any `AnalysisTemplate` metric fails or `SDKHighRenderLatency` / `PubSubInvalidationFailure` fires, Argo Rollouts automatically aborts and reverts traffic to the stable ReplicaSet without human intervention.
+4. **Manual Emergency Abort**:
+   - To immediately halt a canary and restore 100% traffic to the stable ReplicaSet:
+     `kubectl argo rollouts abort rag-prompt-registry-service -n rag-platform`
+   - If a prompt template pointer (`@production`) also needs reverting, execute **Runbook 1** (`PUT /v1/templates/{id}/tags/@production`).

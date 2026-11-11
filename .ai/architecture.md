@@ -25,7 +25,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
 - **Entry Points (`cmd/prompt-registry-server/main.go`)**:
   - Initializes runtime environment, parses 12-factor configuration, establishes PostgreSQL connection pool via `jackc/pgx/v5`, bootstraps Redis 7.2 client, and binds both gRPC and HTTP listeners.
   - Concurrently serves the internal administration HTTP server on port `8080` exposing `/docs`, `/redoc`, `/api/docs`, `/openapi.yaml`, `/healthz`, `/ready`, and `/metrics`.
-  - Concurrently serves the gRPC management server on port `50051` exposing `proto/v1/prompt_service.proto`.
+  - Concurrently serves the gRPC management server on port `9090` exposing `proto/v1/prompt_service.proto`.
 - **Endpoints & Routing**:
   - `POST /v1/templates`: Create template aggregate and publish initial immutable version $v_1$.
   - `GET /v1/templates`: Paginated listing of registered prompt templates within tenant.

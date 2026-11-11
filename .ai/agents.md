@@ -17,7 +17,7 @@ The `rag-prompt-registry-service` explicitly decouples administrative lifecycle 
    - Direct transactional internal audit ledger (`prompt_audit_ledger`) committed atomically in the same PostgreSQL transaction (ADR-004: no Debezium/Kafka CDC overhead).
    - PgBouncer in transaction pooling mode using `jackc/pgx/v5` with `ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` (ADR-003).
    - Internal administration HTTP server on port `8080` exposing `/docs`, `/redoc`, `/api/docs`, `/openapi.yaml`, `/healthz`, `/ready`, and `/metrics`.
-   - gRPC management server on port `50051` exposing `proto/v1/prompt_service.proto`.
+   - gRPC management server on port `9090` exposing `proto/v1/prompt_service.proto`.
 2. **Data Plane (`go-prompt-sdk` in `pkg/promptsdk`)**:
    - Embedded Go library imported directly into calling orchestrators (`rag-search-orchestrator`).
    - Thread-safe, read-through local template memory cache backed by background invalidation listeners (L1 cache: unbounded TTL on immutable versions, 5m fallback TTL on mutable tags).

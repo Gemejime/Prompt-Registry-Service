@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 3: Cache Invalidation & Orchestrator Wiring (Weeks 5–6)** (🟢 Completed)
+- **Phase 4: Resilience, Chaos & Production Rollout (Weeks 7–8)** (🟢 Completed)
 
 ## Current Goal
 
-- Phase 3 completed and verified. Ready to proceed to **Phase 4: Resilience, Chaos & Production Rollout**.
+- All 4 phases completed and verified. Ready for production GitOps rollout via ArgoCD & Argo Rollouts.
 
 ---
 
@@ -17,7 +17,7 @@
 | **Phase 1: Schemas & Relational Core** | Weeks 1–2 | Control Plane Database & Immutability | • `.gitignore` ignoring `tasks/` and build artifacts.<br>• Comprehensive GitHub Actions CI workflow (lint-and-typecheck, security-and-logging-audit, OpenAPI 3.1 sync, test-suites).<br>• Full `.ai` context overhaul and `GEMINI.md` aligned with backend concepts.<br>• PostgreSQL 16 schema with strict tenant isolation, immutable version tables, tag pointers, and an internal audit ledger.<br>• PgBouncer integration verifying Simple Protocol Mode via `jackc/pgx/v5`.<br>• Core gRPC/REST management APIs for prompt versioning and schema registration. | 🟢 Completed |
 | **Phase 2: In-Process Engine (`go-prompt-sdk`)** | Weeks 3–4 | Compiler, Buffer Pools & Dialects | • Implementation of `go-prompt-sdk` featuring `sync.Pool` zero-allocation string interpolation.<br>• Dialect adapters for Anthropic XML, Meta Llama-3 special tokens, and standard JSON formats.<br>• Tokenizer budgeting hooks calculating framing overhead before interpolation.<br>• Unit test suite & memory benchmark validation ($P99 \le 0.5$ms, 0 heap escapes across 50 KB context blocks). | 🟢 Completed |
 | **Phase 3: Cache Invalidation & Orchestrator Wiring** | Weeks 5–6 | Redis Pub/Sub & SDK Synchronization | • Multi-instance cache invalidation bus via Redis Pub/Sub (`channel:prompt:invalidation`).<br>• Embedded SDK integration into `rag-search-orchestrator` pipeline.<br>• Benchmark validation: $<0.5$ms rendering times and $<500$ms pointer propagation. | 🟢 Completed |
-| **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Fault Tolerance & Release Gating | • Chaos testing: killing registry pods while validating uninterrupted SDK in-memory rendering.<br>• Allocation profiling verifying zero memory accumulation on 10,000 RPS orchestrator loads.<br>• Production deployment via Helm and canary cutover. | ⚪ Pending |
+| **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Fault Tolerance & Release Gating | • Chaos testing: killing registry pods & Redis while validating uninterrupted SDK in-memory rendering.<br>• Thundering herd singleflight recovery, Pub/Sub flapping backoff, and partial Redis rollback resilience.<br>• Allocation profiling verifying 0 allocs/op and zero memory accumulation on 10,000 RPS orchestrator loads.<br>• Distroless Docker container, production Helm chart, Prometheus alerting, and Argo Rollouts canary cutover. | 🟢 Completed |
 
 ---
 
@@ -96,6 +96,22 @@
       - Created comprehensive test suites: `pkg/orchestrator/pipeline_test.go`, `test/integration/phase3_invalidation_bus_test.go`, and `test/integration/phase3_orchestrator_test.go`.
       - Achieved 100% Go docstring coverage across all packages, types, and test helper functions.
       - Updated `.github/workflows/ci.yml` govulncheck installation to `@latest` ensuring full compatibility with Go 1.26+ toolchains.
+  - **Phase 4 Resilience, Chaos & Production Rollout Implementation**:
+    - **Control Plane Metrics & Port Alignment**:
+      - Extracted `MutationMetricsRecorder` into `internal/application/command/mutation_metrics.go` with atomic `RecordRollback()` tracking triggered by `PromoteTagHandler` on semantic tag rollbacks (`isRollback == true`).
+      - Exported `prompt_registry_pointer_rollbacks_total` on `/metrics` in `internal/transport/http/router.go` for `ElevatedPointerRollbacks` alert evaluation.
+      - Aligned default `GRPC_PORT` to `9090` in `cmd/prompt-registry-server/main.go` and `.env.example`, added `-healthcheck` flag and `main.version` ldflags injection.
+    - **SDK Pool & Singleflight Hardening**:
+      - Bounded `ReleaseBuffer` in `pkg/promptsdk/compiler.go` (`maxPooledBufferCap = 512 KiB`) to prevent oversized context buffers from accumulating in `sync.Pool`.
+      - Hardened `Client.fetchAndCacheTag` in `pkg/promptsdk/client.go` to re-check fresh `L1_tag` state inside the singleflight lock, eliminating trailing duplicate RPCs during thundering-herd recovery.
+    - **Chaos & 10,000 RPS Load Profiling Suites**:
+      - Implemented `test/integration/phase4_chaos_test.go` covering total Control Plane + Redis outage serving, 1,000-goroutine singleflight recovery, Redis Pub/Sub flapping + goroutine leak checks, and Runbook 1/2 rollback resilience under partial Redis failures.
+      - Implemented `test/sdk/phase4_load_benchmark_test.go` verifying `0 B/op`, `0 allocs/op` across all dialects on 50 KB blocks, repeated 10,000-request heap stability, oversized buffer eviction, and Control Plane memory footprint compliance ($\le 64\text{ MiB}$ steady-state / $\le 128\text{ MiB}$ peak).
+    - **Distroless Container, Helm Chart & GitOps Canary**:
+      - Created multi-stage distroless Dockerfile (`deployments/docker/Dockerfile`) and `.dockerignore` packaging `openapi/openapi.yaml`.
+      - Created production Helm chart (`deployments/helm/rag-prompt-registry/`) with `Chart.yaml`, `values.yaml`, `deployment.yaml`, `service.yaml`, `poddisruptionbudget.yaml`, `configmap.yaml`, `secret.yaml`, `servicemonitor.yaml`, `prometheusrule.yaml`, `rollout.yaml`, and `analysistemplate.yaml`.
+      - Created GitOps ArgoCD `Application` manifest (`deployments/gitops/argocd-application.yaml`).
+      - Documented deployment specifications, Prometheus alerting matrix, and Runbook 3 in `.ai/doc-api.md` and `.ai/progress-tracker.md`.
 
 ---
 
@@ -124,3 +140,12 @@
 1. If an orchestrator instance loses its Redis Pub/Sub connection, it falls back to the 5-minute safety TTL on mutable pointer tags.
 2. Check the `prompt_sdk_pubsub_connected` gauge on the orchestrator.
 3. If disconnected, restart the client connection pool or force a local cache wipe via the orchestrator's diagnostic endpoint.
+
+### Runbook 3: Progressive Canary Rollout & Automated Abort via Argo Rollouts
+1. Enable canary delivery in Helm (`canary.enabled=true`) with target `image.tag` and sync via ArgoCD (`deployments/gitops/argocd-application.yaml`).
+2. Monitor live Argo Rollout steps (`10%` -> 2m pause + analysis -> `50%` -> 5m pause + analysis -> `100%`):
+   `kubectl argo rollouts get rollout rag-prompt-registry-service -n rag-platform --watch`
+3. Verify Prometheus `AnalysisTemplate` gates pass (`rate(prompt_invalidation_events_published_total{status="error"}[2m]) == 0`, `rate(prompt_registry_mutation_duration_seconds_count{status="error"}[2m]) == 0`, and zero `ElevatedPointerRollbacks` spikes). Any threshold breach triggers an automatic abort back to the stable ReplicaSet.
+4. For manual emergency abort, run:
+   `kubectl argo rollouts abort rag-prompt-registry-service -n rag-platform`
+   and execute **Runbook 1** if a `@production` prompt pointer also requires rollback.
