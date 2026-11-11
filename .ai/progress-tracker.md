@@ -116,6 +116,10 @@
   - Created `internal/config/env.go` implementing zero-dependency `.env` / `ENV_FILE` loading (without overwriting existing OS environment variables), `ParseLogLevel`, and typed env helpers (`GetEnv`, `GetEnvInt`, `GetEnvBool`, `ParseCSV`).
   - Wired `.env` loading, `LOG_LEVEL`, `CONN_EXEC_MODE` (via `postgres.ParseQueryExecMode` defaulting to `simple_protocol` per ADR-003), and `OPENAPI_SPEC_PATH` into `cmd/prompt-registry-server/main.go`, `internal/infrastructure/persistence/postgres/pool.go`, `pkg/promptsdk/client.go`, and `pkg/orchestrator/pipeline.go`.
   - Updated `.env.example` and Helm `configmap.yaml`/`values.yaml` with `JWT_HMAC_SECRET`, `JWT_ISSUER`, and `OPENAPI_SPEC_PATH`, synchronized `.ai/doc-api.md`, and added `test/unit/config_env_test.go`.
+- **Automated `.env.prod` -> Helm Deployment Synchronization**:
+  - Converted `deployments/helm/rag-prompt-registry/templates/configmap.yaml` to dynamically range over `.Values.env` (preserving `HTTP_PORT` / `GRPC_PORT` fallbacks and ignoring `secretName` and `nil` values) and updated `values.yaml` and `_helpers.tpl` / `secret.yaml` / `deployment.yaml` / `rollout.yaml` (`checksum/config` rolling-restart trigger + `env.secretName` support).
+  - Created `scripts/sync_env_to_deployments.py` (`--sync` and `--check-only`) excluding sensitive keys (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `DSN`, `CREDENTIAL`, `PRIVATE`) and preserving `secretName` and all top-level Helm blocks.
+  - Installed `.git/hooks/pre-commit` to block commits on `.env.prod` vs `values.yaml` drift, documented `.env` vs `.env.prod` semantics in `.env.example` and `.ai/doc-api.md`, and synced `deployments/helm/rag-prompt-registry/values.yaml`.
 
 ---
 

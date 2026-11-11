@@ -286,3 +286,45 @@ func TestDotEnvChangeAffectsRuntimeJWTAndConfig(t *testing.T) {
 		t.Fatalf("expected token signed with .env secret/issuer to succeed (200), got %d: %s", recNew.Code, recNew.Body.String())
 	}
 }
+
+// TestHelmDynamicConfigMapAndEnvExampleNotice verifies dynamic ConfigMap rendering rules,
+// checksum/config pod restart annotations, and .env.example deployment notice.
+func TestHelmDynamicConfigMapAndEnvExampleNotice(t *testing.T) {
+	cmRaw, err := os.ReadFile("../../deployments/helm/rag-prompt-registry/templates/configmap.yaml")
+	if err != nil {
+		t.Fatalf("failed to read configmap.yaml: %v", err)
+	}
+	cm := string(cmRaw)
+	for _, marker := range []string{
+		"range $key, $val := $env",
+		"HTTP_PORT:",
+		"GRPC_PORT:",
+		`ne $key "secretName"`,
+		`ne $val nil`,
+	} {
+		if !strings.Contains(cm, marker) {
+			t.Fatalf("configmap.yaml missing expected dynamic template marker %q", marker)
+		}
+	}
+
+	for _, tmpl := range []string{
+		"../../deployments/helm/rag-prompt-registry/templates/deployment.yaml",
+		"../../deployments/helm/rag-prompt-registry/templates/rollout.yaml",
+	} {
+		raw, err := os.ReadFile(tmpl)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", tmpl, err)
+		}
+		if !strings.Contains(string(raw), `checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}`) {
+			t.Fatalf("%s missing checksum/config annotation", tmpl)
+		}
+	}
+
+	exRaw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("failed to read .env.example: %v", err)
+	}
+	if !strings.Contains(string(exRaw), ".env.prod") || !strings.Contains(string(exRaw), "deployments/") {
+		t.Fatalf(".env.example header must clarify .env is local-only and .env.prod governs deployments/")
+	}
+}

@@ -1219,6 +1219,14 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
 | `DEFAULT_TENANT_ID` | `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11` | Default tenant UUID fallback |
 | `LOG_LEVEL` | `INFO` | Structured JSON `slog` level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 
+### Deployment Environment Synchronization (`.env.prod` -> Helm `values.yaml`)
+- **Single Source of Truth**: `.env` is reserved strictly for local development. `.env.prod` (gitignored) is the single source of truth for Helm deployments.
+- **Dynamic ConfigMap (`deployments/helm/rag-prompt-registry/templates/configmap.yaml`)**: Dynamically iterates over `.Values.env`, preserves `HTTP_PORT` (`8080`) and `GRPC_PORT` (`9090`) fallbacks, and ignores `secretName` and `nil` values.
+- **Rolling Restarts (`deployment.yaml` & `rollout.yaml`)**: Pod templates include `checksum/config` computed over `configmap.yaml` so any ConfigMap update triggers an automatic rolling restart.
+- **Sync & Pre-Commit Drift Gate (`scripts/sync_env_to_deployments.py`, `.git/hooks/pre-commit`)**:
+  - `python scripts/sync_env_to_deployments.py --sync` updates `deployments/helm/rag-prompt-registry/values.yaml` (`.Values.env`) from `.env.prod` while excluding sensitive keys (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `DSN`, `CREDENTIAL`, `PRIVATE`) and preserving `secretName` and all other Helm blocks.
+  - `python scripts/sync_env_to_deployments.py --check-only` verifies zero drift (exits `1` on mismatch), enforced locally by `.git/hooks/pre-commit`.
+
 ### Prometheus Alerting Matrix (`templates/prometheusrule.yaml`)
 | Alert Name | PromQL Expression | Window (`for`) | Severity | Trigger Condition |
 | :--- | :--- | :--- | :--- | :--- |
