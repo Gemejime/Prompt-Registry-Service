@@ -1,0 +1,45 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: rag-prompt-registry.rules
+      rules:
+        - alert: SDKHighRenderLatency
+          expr: histogram_quantile(0.99, sum(rate(prompt_sdk_render_duration_seconds_bucket[5m])) by (le)) > 0.002
+          for: 5m
+          labels:
+            severity: critical
+            service: rag-prompt-registry-service
+          annotations:
+            summary: "go-prompt-sdk P99 render latency exceeds 2ms"
+            description: "In-process prompt SDK P99 compilation latency has exceeded 2ms over a 5-minute window."
+
+        - alert: PubSubInvalidationFailure
+          expr: rate(prompt_invalidation_events_published_total{status="error"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            service: rag-prompt-registry-service
+          annotations:
+            summary: "Redis Pub/Sub tag invalidation publish failure"
+            description: "The prompt registry control plane failed to publish tag pointer invalidation events to Redis Pub/Sub."
+
+        - alert: ElevatedPointerRollbacks
+          expr: increase(prompt_registry_pointer_rollbacks_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            service: rag-prompt-registry-service
+          annotations:
+            summary: "Semantic tag pointer rollback detected within 15m window"
+            description: "One or more semantic tag pointers (e.g. @production) were rolled back within the last 15 minutes."
+{{- end }}
+

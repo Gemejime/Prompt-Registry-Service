@@ -707,6 +707,14 @@ func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	sb.WriteString(fmt.Sprintf("prompt_invalidation_events_published_total{status=\"success\"} %d\n", pubSuccess))
 	sb.WriteString(fmt.Sprintf("prompt_invalidation_events_published_total{status=\"error\"} %d\n", pubErr))
 
+	rollbacks := uint64(0)
+	if r.cfg.MutationMetric != nil {
+		rollbacks = r.cfg.MutationMetric.RollbackCount()
+	}
+	sb.WriteString("# HELP prompt_registry_pointer_rollbacks_total Semantic tag pointer rollbacks executed\n")
+	sb.WriteString("# TYPE prompt_registry_pointer_rollbacks_total counter\n")
+	sb.WriteString(fmt.Sprintf("prompt_registry_pointer_rollbacks_total %d\n", rollbacks))
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(sb.String()))

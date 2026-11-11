@@ -28,12 +28,20 @@ func AcquireBuffer() *bytes.Buffer {
 	return buf
 }
 
-// ReleaseBuffer resets and returns a *bytes.Buffer to the global sync.Pool.
+// maxPooledBufferCap bounds retained buffer capacity in renderBufferPool (512 KiB) so
+// anomalously large contexts do not cause runaway heap accumulation in sync.Pool.
+const maxPooledBufferCap = 512 * 1024
+
+// ReleaseBuffer resets and returns a *bytes.Buffer to the global sync.Pool,
+// discarding buffers whose capacity exceeds maxPooledBufferCap so GC can reclaim them.
 func ReleaseBuffer(buf *bytes.Buffer) {
 	if buf == nil {
 		return
 	}
 	buf.Reset()
+	if buf.Cap() > maxPooledBufferCap {
+		return
+	}
 	renderBufferPool.Put(buf)
 }
 

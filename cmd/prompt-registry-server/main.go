@@ -27,6 +27,9 @@ import (
 	httptransport "rag-prompt-registry-service/internal/transport/http"
 )
 
+// version is injected at build time via -ldflags="-X main.version=...".
+var version = "dev"
+
 // serverReadiness implements httptransport.ReadinessChecker for the /ready endpoint.
 type serverReadiness struct {
 	pgPool      *pgxpool.Pool
@@ -69,13 +72,27 @@ func getEnvInt(key string, fallback int) int {
 
 // main initializes dependencies, starts the HTTP and gRPC control plane servers, and handles graceful shutdown.
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		httpPort := getEnv("HTTP_PORT", "8080")
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get("http://127.0.0.1:" + httpPort + "/healthz")
+		if err != nil {
+			os.Exit(1)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
 	httpPort := getEnv("HTTP_PORT", "8080")
-	grpcPort := getEnv("GRPC_PORT", "50051")
+	grpcPort := getEnv("GRPC_PORT", "9090")
 	pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
 	allowInMemoryStore := strings.EqualFold(getEnv("ALLOW_IN_MEMORY_STORE", "false"), "true")
 	pgMaxConns := int32(getEnvInt("POSTGRES_MAX_CONNS", 25))
@@ -186,7 +203,7 @@ func main() {
 
 	errCh := make(chan error, 2)
 	go func() {
-		logger.Info("starting control plane HTTP server", slog.String("port", httpPort))
+		logger.Info("starting control plane HTTP server", slog.String("port", httpPort), slog.String("version", version))
 		if serveErr := httpServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("http server error: %w", serveErr)
 		}

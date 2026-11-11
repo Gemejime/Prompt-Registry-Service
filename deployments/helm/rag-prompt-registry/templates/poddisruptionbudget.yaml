@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "rag-prompt-registry.selectorLabels" . | nindent 6 }}
+{{- end }}
+

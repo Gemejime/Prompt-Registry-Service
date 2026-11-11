@@ -36,7 +36,7 @@ const (
 
 // ClientConfig configures the embedded Data Plane PromptSDK Client.
 type ClientConfig struct {
-	// RegistryAddr is the optional control plane gRPC address (e.g. "localhost:50051").
+	// RegistryAddr is the optional control plane gRPC address (e.g. "localhost:9090").
 	RegistryAddr string
 	// GRPCConn is an optional pre-established gRPC client connection.
 	GRPCConn grpc.ClientConnInterface
@@ -434,15 +434,13 @@ func parseVersionNumber(s string) (int, bool) {
 }
 
 // fetchAndCacheTag coalesces concurrent L1 tag misses using singleflight and populates L1_tag + L1_version.
-func (c *Client) fetchAndCacheTag(ctx context.Context, templateID, tag string, forceRefresh bool) (*CompiledTemplate, error) {
+func (c *Client) fetchAndCacheTag(ctx context.Context, templateID, tag string, _ bool) (*CompiledTemplate, error) {
 	sfKey := "tag|" + templateID + "|" + tag
 
 	c.sfMu.Lock()
-	if !forceRefresh {
-		if compiled, needsRefresh, ok := c.cache.GetTag(templateID, tag); ok && !needsRefresh {
-			c.sfMu.Unlock()
-			return compiled, nil
-		}
+	if compiled, needsRefresh, ok := c.cache.GetTag(templateID, tag); ok && !needsRefresh {
+		c.sfMu.Unlock()
+		return compiled, nil
 	}
 	if call, exists := c.inFlight[sfKey]; exists {
 		c.sfMu.Unlock()

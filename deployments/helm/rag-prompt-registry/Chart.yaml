@@ -1,0 +1,14 @@
+apiVersion: v2
+name: rag-prompt-registry-service
+description: Control plane service for RAG Prompt Registry with immutable AST versioning, JSON output schema registry, and Redis Pub/Sub cache invalidation.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - rag
+  - prompt-registry
+  - go
+  - control-plane
+maintainers:
+  - name: Platform Engineering
+

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}-config
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+data:
+  HTTP_PORT: {{ .Values.config.httpPort | quote }}
+  GRPC_PORT: {{ .Values.config.grpcPort | quote }}
+  CONN_EXEC_MODE: {{ .Values.config.connExecMode | quote }}
+  ALLOW_IN_MEMORY_STORE: {{ .Values.config.allowInMemoryStore | quote }}
+  POSTGRES_MAX_CONNS: {{ .Values.config.postgresMaxConns | quote }}
+  POSTGRES_MIN_CONNS: {{ .Values.config.postgresMinConns | quote }}
+  POSTGRES_AUTO_MIGRATE: {{ .Values.config.postgresAutoMigrate | quote }}
+  REDIS_ADDRS: {{ .Values.config.redisAddrs | quote }}
+  REDIS_DB: {{ .Values.config.redisDB | quote }}
+  REDIS_INVALIDATION_CHANNEL: {{ .Values.config.redisInvalidationChannel | quote }}
+  ADMIN_WRITE_RATE_LIMIT_RPS: {{ .Values.config.adminWriteRateLimitRPS | quote }}
+  ADMIN_WRITE_RATE_LIMIT_BURST: {{ .Values.config.adminWriteRateLimitBurst | quote }}
+  DEFAULT_TENANT_ID: {{ .Values.config.defaultTenantID | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+

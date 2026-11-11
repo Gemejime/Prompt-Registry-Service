@@ -107,6 +107,9 @@ func (h *PromoteTagHandler) PromoteTag(ctx context.Context, in PromoteTagInput) 
 		status = "error"
 		return nil, err
 	}
+	if isRollback {
+		h.metrics.RecordRollback()
+	}
 
 	if h.l2Cache != nil {
 		var promotedVer *entity.PromptVersion

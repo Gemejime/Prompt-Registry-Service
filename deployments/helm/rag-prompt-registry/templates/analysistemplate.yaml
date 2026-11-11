@@ -1,0 +1,41 @@
+{{- if .Values.canary.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}-canary-analysis
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+spec:
+  metrics:
+    - name: invalidation-publish-error-rate
+      interval: 30s
+      count: 4
+      successCondition: result[0] == 0
+      failureLimit: 0
+      provider:
+        prometheus:
+          address: {{ .Values.canary.prometheusAddress | quote }}
+          query: |
+            sum(rate(prompt_invalidation_events_published_total{status="error"}[2m])) OR on() vector(0)
+    - name: mutation-error-rate
+      interval: 30s
+      count: 4
+      successCondition: result[0] == 0
+      failureLimit: 0
+      provider:
+        prometheus:
+          address: {{ .Values.canary.prometheusAddress | quote }}
+          query: |
+            sum(rate(prompt_registry_mutation_duration_seconds_count{status="error"}[2m])) OR on() vector(0)
+    - name: elevated-pointer-rollbacks
+      interval: 30s
+      count: 4
+      successCondition: result[0] == 0
+      failureLimit: 0
+      provider:
+        prometheus:
+          address: {{ .Values.canary.prometheusAddress | quote }}
+          query: |
+            sum(increase(prompt_registry_pointer_rollbacks_total[15m])) OR on() vector(0)
+{{- end }}
+
