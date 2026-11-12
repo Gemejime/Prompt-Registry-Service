@@ -22,6 +22,7 @@ const (
 
 	defaultImmutableTTL = 24 * time.Hour
 	defaultTagTTL       = 5 * time.Minute
+	maxClusterRedirects = 3
 )
 
 // ClientOptions holds Redis 7.2 Cluster / Standalone connection configuration.
@@ -74,36 +75,95 @@ func NewInMemoryL2Cache() *L2CacheClient {
 	}
 }
 
+// dialAddr connects to a specific Redis node and performs optional AUTH and SELECT commands.
+func (c *L2CacheClient) dialAddr(ctx context.Context, addr string) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if c.password != "" {
+		if _, authErr := execRESP(conn, "AUTH", c.password); authErr != nil {
+			_ = conn.Close()
+			return nil, authErr
+		}
+	}
+	if c.db > 0 {
+		if _, selErr := execRESP(conn, "SELECT", strconv.Itoa(c.db)); selErr != nil {
+			_ = conn.Close()
+			return nil, selErr
+		}
+	}
+	return conn, nil
+}
+
 // dialNode connects to the first reachable Redis node and performs optional AUTH and SELECT commands.
 func (c *L2CacheClient) dialNode(ctx context.Context) (net.Conn, error) {
 	if c == nil || len(c.addrs) == 0 {
 		return nil, fmt.Errorf("no redis cluster addresses configured")
 	}
 	var lastErr error
-	dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
 	for _, addr := range c.addrs {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		conn, err := c.dialAddr(ctx, addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if c.password != "" {
-			if _, authErr := execRESP(conn, "AUTH", c.password); authErr != nil {
-				_ = conn.Close()
-				lastErr = authErr
-				continue
-			}
-		}
-		if c.db > 0 {
-			if _, selErr := execRESP(conn, "SELECT", strconv.Itoa(c.db)); selErr != nil {
-				_ = conn.Close()
-				lastErr = selErr
-				continue
-			}
-		}
 		return conn, nil
 	}
 	return nil, lastErr
+}
+
+// parseClusterRedirect inspects a Redis error for -MOVED or -ASK cluster slot redirections.
+func parseClusterRedirect(err error) (kind, targetAddr string, ok bool) {
+	if err == nil {
+		return "", "", false
+	}
+	const prefix = "redis error: "
+	msg := err.Error()
+	if !strings.HasPrefix(msg, prefix) {
+		return "", "", false
+	}
+	fields := strings.Fields(strings.TrimPrefix(msg, prefix))
+	if len(fields) == 3 && (fields[0] == "MOVED" || fields[0] == "ASK") && fields[2] != "" {
+		return fields[0], fields[2], true
+	}
+	return "", "", false
+}
+
+// execClusterCommand runs a RESP command against the configured Redis cluster and follows
+// up to maxClusterRedirects MOVED/ASK slot redirections across shards.
+func (c *L2CacheClient) execClusterCommand(ctx context.Context, args ...string) (string, error) {
+	conn, err := c.dialNode(ctx)
+	if err != nil {
+		return "", err
+	}
+	askPending := false
+	for hop := 0; hop <= maxClusterRedirects; hop++ {
+		if askPending {
+			if _, askErr := execRESP(conn, "ASKING"); askErr != nil {
+				_ = conn.Close()
+				return "", askErr
+			}
+			askPending = false
+		}
+		val, cmdErr := execRESP(conn, args...)
+		_ = conn.Close()
+		if cmdErr == nil {
+			return val, nil
+		}
+		kind, targetAddr, isRedirect := parseClusterRedirect(cmdErr)
+		if !isRedirect || hop == maxClusterRedirects {
+			return "", cmdErr
+		}
+		nextConn, dialErr := c.dialAddr(ctx, targetAddr)
+		if dialErr != nil {
+			return "", dialErr
+		}
+		conn = nextConn
+		askPending = kind == "ASK"
+	}
+	return "", fmt.Errorf("redis cluster redirect limit exceeded")
 }
 
 // execRESP sends a RESP array command over conn and parses the single-line or bulk-string response.
@@ -192,12 +252,7 @@ func (c *L2CacheClient) getBytes(ctx context.Context, key string) ([]byte, bool)
 		return nil, false
 	}
 	if len(c.addrs) > 0 {
-		conn, err := c.dialNode(ctx)
-		if err != nil {
-			return nil, false
-		}
-		val, rErr := execRESP(conn, "GET", key)
-		_ = conn.Close()
+		val, rErr := c.execClusterCommand(ctx, "GET", key)
 		if rErr != nil || val == "" {
 			return nil, false
 		}
@@ -235,14 +290,11 @@ func (c *L2CacheClient) setBytes(ctx context.Context, key string, val []byte, tt
 	c.mu.Unlock()
 
 	if len(c.addrs) > 0 {
-		if conn, err := c.dialNode(ctx); err == nil {
-			sec := int(ttl.Seconds())
-			if sec <= 0 {
-				sec = 300
-			}
-			_, _ = execRESP(conn, "SET", key, string(val), "EX", strconv.Itoa(sec))
-			_ = conn.Close()
+		sec := int(ttl.Seconds())
+		if sec <= 0 {
+			sec = 300
 		}
+		_, _ = c.execClusterCommand(ctx, "SET", key, string(val), "EX", strconv.Itoa(sec))
 	}
 	return nil
 }
@@ -268,16 +320,13 @@ func (c *L2CacheClient) setBytesNX(ctx context.Context, key string, val []byte, 
 	c.mu.Unlock()
 
 	if len(c.addrs) > 0 {
-		conn, err := c.dialNode(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = conn.Close() }()
 		sec := int(ttl.Seconds())
 		if sec <= 0 {
 			sec = 300
 		}
-		_, _ = execRESP(conn, "SET", key, string(val), "EX", strconv.Itoa(sec), "NX")
+		if _, err := c.execClusterCommand(ctx, "SET", key, string(val), "EX", strconv.Itoa(sec), "NX"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -292,12 +341,7 @@ func (c *L2CacheClient) delKey(ctx context.Context, key string) error {
 	c.mu.Unlock()
 
 	if len(c.addrs) > 0 {
-		conn, err := c.dialNode(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = conn.Close() }()
-		if _, err := execRESP(conn, "DEL", key); err != nil {
+		if _, err := c.execClusterCommand(ctx, "DEL", key); err != nil {
 			return err
 		}
 	}
@@ -309,12 +353,7 @@ func (c *L2CacheClient) publishRemote(ctx context.Context, channel, payload stri
 	if c == nil || len(c.addrs) == 0 {
 		return nil
 	}
-	conn, err := c.dialNode(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	_, err = execRESP(conn, "PUBLISH", channel, payload)
+	_, err := c.execClusterCommand(ctx, "PUBLISH", channel, payload)
 	return err
 }
 

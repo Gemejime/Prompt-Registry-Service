@@ -97,7 +97,7 @@ func main() {
 	pgMinConns := int32(config.GetEnvInt("POSTGRES_MIN_CONNS", 2))
 	autoMigrate := config.GetEnvBool("POSTGRES_AUTO_MIGRATE", true)
 
-	redisAddrs := config.ParseCSV(config.GetEnv("REDIS_ADDRS", ""))
+	redisAddrs := config.ParseCSV(config.GetEnv("REDIS_CLUSTER_ADDRS", config.GetEnv("REDIS_ADDRS", "")))
 	redisDB := config.GetEnvInt("REDIS_DB", 0)
 	invalidationChan := config.GetEnv("REDIS_INVALIDATION_CHANNEL", redis.DefaultInvalidationChannel)
 	defaultTenant := config.GetEnv("DEFAULT_TENANT_ID", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")

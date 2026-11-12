@@ -61,7 +61,7 @@ jobs:
       RELEASE_NAME: rag-prompt-registry-service
       CHART_PATH: deployments/helm/rag-prompt-registry
       K8S_NAMESPACE: ${{ inputs.namespace }}
-      K8S_SECRET_NAME: rag-prompt-registry-service-secrets
+      K8S_SECRET_NAME: rag-prompt-registry-service-secret
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
