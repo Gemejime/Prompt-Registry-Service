@@ -190,6 +190,7 @@ func TestDotEnvExampleContainsAllImportantVariables(t *testing.T) {
 		"POSTGRES_MAX_CONNS=",
 		"POSTGRES_MIN_CONNS=",
 		"POSTGRES_AUTO_MIGRATE=",
+		"REDIS_CLUSTER_ADDRS=",
 		"REDIS_ADDRS=",
 		"REDIS_PASSWORD=",
 		"REDIS_DB=",

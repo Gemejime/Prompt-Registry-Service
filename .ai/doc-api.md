@@ -1208,8 +1208,9 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
 | `POSTGRES_MAX_CONNS` | `25` | Maximum PostgreSQL pool connections |
 | `POSTGRES_MIN_CONNS` | `2` | Minimum PostgreSQL pool connections |
 | `POSTGRES_AUTO_MIGRATE` | `true` | Apply embedded SQL migrations on startup |
-| `REDIS_ADDRS` | _empty_ | Comma-separated Redis 7.2 Cluster / Standalone addresses |
-| `REDIS_PASSWORD` | _empty_ | Redis authentication password |
+| `REDIS_CLUSTER_ADDRS` | _empty_ | Primary comma-separated Redis 7.2 Cluster headless seed endpoints (e.g. `rag-prompt-registry-service-redis-{0,1,2}.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379`) |
+| `REDIS_ADDRS` | `localhost:6379` | Fallback comma-separated Redis 7.2 Cluster / Standalone addresses for local Docker Compose (`REDIS_CLUSTER_ADDRS` takes precedence) |
+| `REDIS_PASSWORD` | _empty_ | Redis authentication password (injected via Kubernetes Secret `rag-prompt-registry-service-secret`) |
 | `REDIS_DB` | `0` | Redis database index |
 | `REDIS_INVALIDATION_CHANNEL` | `channel:prompt:invalidation` | Redis Pub/Sub invalidation channel (ADR-002) |
 | `JWT_HMAC_SECRET` | _dev default_ | HS256 signing/verification secret for control plane and SDK Bearer JWTs |
@@ -1227,7 +1228,13 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
   - `python scripts/sync_env_to_deployments.py --sync` updates `deployments/helm/rag-prompt-registry/values.yaml` (`.Values.env`) from `.env.prod` while excluding sensitive keys (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`, `DSN`, `CREDENTIAL`, `PRIVATE`) and preserving `secretName` and all other Helm blocks.
   - `python scripts/sync_env_to_deployments.py --check-only` verifies zero drift (exits `1` on mismatch), enforced locally by `.git/hooks/pre-commit`.
 - **CI/CD Secret Injection (`.github/workflows/deploy.yml` & `deployments/SECRET_MANAGEMENT.md`)**:
-  - Sensitive credentials (`POSTGRES_DSN`, `JWT_HMAC_SECRET`, `REDIS_PASSWORD`) are injected out-of-band into Kubernetes Secret `rag-prompt-registry-service-secrets` from GitHub Environment Secrets (`staging` / `production`) via `--from-env-file` without storing credentials in `values.yaml` or Helm release history, passing `--set env.secretName` and `--set secrets.existingSecret` to Helm.
+  - Sensitive credentials (`POSTGRES_DSN`, `JWT_HMAC_SECRET`, `REDIS_PASSWORD`) are injected out-of-band into Kubernetes Secret `rag-prompt-registry-service-secret` from GitHub Environment Secrets (`staging` / `production`) via `--from-env-file` without storing credentials in `values.yaml` or Helm release history, passing `--set env.secretName` and `--set secrets.existingSecret` to Helm.
+
+### Self-Hosted Bitnami Redis 7.2 Cluster (`deployments/helm/redis-cluster/`, `deployments/redis.md`)
+- **Topology**: Dedicated 6-node `bitnami/redis-cluster` (v11.x, Redis `7.2.5-debian-12-r0`, 3 primary shards + 3 replicas with `cluster.init: true`) deployed as Helm release `rag-prompt-registry-service-redis` in namespace `rag-platform`.
+- **Shared Secret & Persistence**: Consumes `REDIS_PASSWORD` from `rag-prompt-registry-service-secret`, enforces `100m`/`256Mi` requests and `500m`/`1Gi` limits, `5Gi` AOF/RDB persistence, soft pod anti-affinity, and Prometheus metrics exporter on port `9121` (`prometheus.io/scrape: "true"`).
+- **Cluster Slot Redirects (`internal/infrastructure/cache/redis/cluster_client.go`)**: RESP client handles `-MOVED` and `-ASK` (`ASKING`) slot redirections across headless StatefulSet pods (`rag-prompt-registry-service-redis-{0,1,2}.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379`).
+- **GitOps & Local Dev**: Managed declaratively via `deployments/argocd/redis-cluster-application.yaml`, one-click deployed via `scripts/deploy_redis_cluster.{sh,ps1}`, and mirrored locally via `deployments/docker/docker-compose.redis.yml` (`bitnami/redis:7.2-debian-12`).
 
 ### Prometheus Alerting Matrix (`templates/prometheusrule.yaml`)
 | Alert Name | PromQL Expression | Window (`for`) | Severity | Trigger Condition |

@@ -12,7 +12,7 @@ This document defines how secrets are separated from non-sensitive configuration
 | `.env.example` | Safe template for local development | Yes | N/A (documentation) |
 | `.env.prod` | Production single source of truth for non-sensitive env vars (and local operator reference) | No (`.gitignore`) | Non-sensitive keys synced to `values.yaml` -> `ConfigMap` |
 | `deployments/helm/rag-prompt-registry/values.yaml` (`env:`) | Non-sensitive 12-factor variables synced via `scripts/sync_env_to_deployments.py --sync` | Yes | `ConfigMap` ([configmap.yaml](helm/rag-prompt-registry/templates/configmap.yaml)) |
-| GitHub Environment Secrets / Vault / ESO | Sensitive credentials (`POSTGRES_DSN`, `JWT_HMAC_SECRET`, `REDIS_PASSWORD`) | No | Kubernetes `Secret` (`rag-prompt-registry-service-secrets`) |
+| GitHub Environment Secrets / Vault / ESO | Sensitive credentials (`POSTGRES_DSN`, `JWT_HMAC_SECRET`, `REDIS_PASSWORD`) | No | Kubernetes `Secret` (`rag-prompt-registry-service-secret`) |
 
 ### Automated Sensitive Key Exclusion
 
@@ -63,10 +63,10 @@ Configure the following secrets under **Settings → Environments** for both `st
 2. **Decode Kubeconfig**: Writes `KUBECONFIG` to `$RUNNER_TEMP/kubeconfig` with `0600` permissions.
 3. **Out-of-Band Secret Upsert**:
    - Writes `POSTGRES_DSN`, `REDIS_PASSWORD`, and `JWT_HMAC_SECRET` to a `0600` temporary file (`$RUNNER_TEMP/secret.env`) without echoing values to stdout or passing credentials in CLI flags.
-   - Runs `kubectl create secret generic rag-prompt-registry-service-secrets --from-env-file="$RUNNER_TEMP/secret.env" --dry-run=client -o yaml | kubectl apply -f -`.
+   - Runs `kubectl create secret generic rag-prompt-registry-service-secret --from-env-file="$RUNNER_TEMP/secret.env" --dry-run=client -o yaml | kubectl apply -f -`.
    - Deletes `$RUNNER_TEMP/secret.env` immediately.
 4. **Helm Release Deployment**:
-   - Invokes `helm upgrade --install` with `--set env.secretName=rag-prompt-registry-service-secrets` and `--set secrets.existingSecret=rag-prompt-registry-service-secrets`.
+   - Invokes `helm upgrade --install` with `--set env.secretName=rag-prompt-registry-service-secret` and `--set secrets.existingSecret=rag-prompt-registry-service-secret`.
    - Because `existingSecret` / `env.secretName` is set, Helm skips rendering [secret.yaml](helm/rag-prompt-registry/templates/secret.yaml) and stores zero credentials inside Helm release Secret objects.
 5. **Secret Rotation Rollout**:
    - If `kubectl apply` reports that the Secret was `created` or `configured`, the workflow triggers `kubectl rollout restart deployment/rag-prompt-registry-service` (when `canary_enabled=false`) and waits for readiness.
@@ -79,13 +79,13 @@ Configure the following secrets under **Settings → Environments** for both `st
 
 ### External Secrets Operator (ESO) / HashiCorp Vault
 
-When using External Secrets Operator instead of GitHub Actions secret upsert, create an `ExternalSecret` targeting `rag-prompt-registry-service-secrets` and set `env.secretName: "rag-prompt-registry-service-secrets"` in `values.yaml` (preserved by `scripts/sync_env_to_deployments.py --sync`):
+When using External Secrets Operator instead of GitHub Actions secret upsert, create an `ExternalSecret` targeting `rag-prompt-registry-service-secret` and set `env.secretName: "rag-prompt-registry-service-secret"` in `values.yaml` (preserved by `scripts/sync_env_to_deployments.py --sync`):
 
 ```yaml
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: rag-prompt-registry-service-secrets
+  name: rag-prompt-registry-service-secret
   namespace: rag-platform
 spec:
   refreshInterval: 1h
@@ -93,7 +93,7 @@ spec:
     name: vault-backend
     kind: ClusterSecretStore
   target:
-    name: rag-prompt-registry-service-secrets
+    name: rag-prompt-registry-service-secret
     creationPolicy: Owner
   data:
     - secretKey: POSTGRES_DSN
@@ -113,7 +113,7 @@ spec:
 ### Manual Cluster Bootstrap (Air-Gapped / Emergency)
 
 ```bash
-kubectl create secret generic rag-prompt-registry-service-secrets \
+kubectl create secret generic rag-prompt-registry-service-secret \
   --namespace rag-platform \
   --from-env-file=.env.secrets \
   --dry-run=client -o yaml | kubectl apply -f -
