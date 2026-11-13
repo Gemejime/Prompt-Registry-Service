@@ -43,6 +43,9 @@ helm upgrade --install $ReleaseName bitnami/redis-cluster `
     --namespace $Namespace `
     --version "11.*" `
     -f $ValuesFile `
+    --set "fullnameOverride=$ReleaseName" `
+    --set "existingSecret=$SecretName" `
+    --set "existingSecretPasswordKey=REDIS_PASSWORD" `
     --wait `
     --timeout 10m
 if ($LASTEXITCODE -ne 0) { throw "Helm deployment failed for '$ReleaseName'." }

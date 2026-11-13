@@ -11,7 +11,7 @@ This document describes the dedicated, production-grade **Bitnami Redis 7.2 Clus
 - **Why In-Cluster Redis Achieves $P99 < 1\text{ms}$**:
   - **Zero External VPC / NAT Egress**: Pod-to-pod traffic stays on the Kubernetes CNI overlay/VPC network within the same availability zone/namespace, avoiding external managed-cache hop overhead.
   - **L2 Read-Through + Pub/Sub Coherence**: Control plane reads hit local L2 cache (`l2:tenant:...`) at sub-millisecond latency ($P99 \le 2\text{ms}$ SLO), while `@production` tag promotions publish eviction events on `channel:prompt:invalidation` across all nodes in $<100\text{ms}$.
-- **Shared Credential Binding**: Authenticates using `REDIS_PASSWORD` from the shared Secret **`rag-prompt-registry-service-secret`** (`global.redis.existingSecret`), eliminating credential drift between the control plane and Redis.
+- **Shared Credential Binding**: Authenticates using `REDIS_PASSWORD` from the shared Secret **`rag-prompt-registry-service-secret`** (`existingSecret`), eliminating credential drift between the control plane and Redis.
 - **Persistence & Sizing**: `5Gi` `ReadWriteOnce` PVC per node with AOF (`appendonly yes`, `appendfsync everysec`) + RDB snapshots, `100m`/`256Mi` requests, `500m`/`1Gi` limits, and Prometheus exporter on port **`9121`**.
 
 ---

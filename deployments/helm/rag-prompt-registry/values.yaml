@@ -111,6 +111,17 @@ serviceMonitor:
   path: /metrics
   labels: {}
 
+# Data Plane (rag-search-orchestrator) PodMonitor for scraping go-prompt-sdk histograms
+sdkMonitor:
+  enabled: true
+  port: http
+  path: /metrics
+  interval: 15s
+  scrapeTimeout: 5s
+  labels: {}
+  selectorLabels:
+    app.kubernetes.io/name: rag-search-orchestrator
+
 prometheusRule:
   enabled: true
   labels: {}
@@ -118,6 +129,10 @@ prometheusRule:
 # Progressive Canary Rollout via Argo Rollouts
 canary:
   enabled: false
+  # Replica count used when canary.enabled=true; 10 replicas allows exact 10%/50% replica-based weights
+  replicaCount: 10
+  # Optional Argo Rollouts trafficRouting block (e.g. istio, nginx, smi)
+  trafficRouting: {}
   prometheusAddress: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
   steps:
     firstWeight: 10

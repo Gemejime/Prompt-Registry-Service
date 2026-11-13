@@ -50,12 +50,13 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- $env := .Values.env | default dict }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.httpPort }}
+              containerPort: {{ default "8080" (get $env "HTTP_PORT") | int }}
               protocol: TCP
             - name: grpc
-              containerPort: {{ .Values.service.grpcPort }}
+              containerPort: {{ default "9090" (get $env "GRPC_PORT") | int }}
               protocol: TCP
           envFrom:
             - configMapRef:

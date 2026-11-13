@@ -1,4 +1,15 @@
 {{- if .Values.canary.enabled }}
+{{- $replicas := int (.Values.canary.replicaCount | default .Values.replicaCount) }}
+{{- $firstWeight := int .Values.canary.steps.firstWeight }}
+{{- $secondWeight := int .Values.canary.steps.secondWeight }}
+{{- if not .Values.canary.trafficRouting }}
+{{- if or (lt (mul $replicas $firstWeight) 100) (ne (mod (mul $replicas $firstWeight) 100) 0) }}
+{{- fail (printf "canary replicaCount (%d) cannot accurately serve firstWeight (%d%%) without canary.trafficRouting; set canary.replicaCount so (replicaCount * firstWeight) is a positive multiple of 100" $replicas $firstWeight) }}
+{{- end }}
+{{- if or (lt (mul $replicas $secondWeight) 100) (ne (mod (mul $replicas $secondWeight) 100) 0) }}
+{{- fail (printf "canary replicaCount (%d) cannot accurately serve secondWeight (%d%%) without canary.trafficRouting; set canary.replicaCount so (replicaCount * secondWeight) is a positive multiple of 100" $replicas $secondWeight) }}
+{{- end }}
+{{- end }}
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -6,7 +17,7 @@ metadata:
   labels:
     {{- include "rag-prompt-registry.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ $replicas }}
   revisionHistoryLimit: 5
   selector:
     matchLabels:
@@ -51,12 +62,13 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- $env := .Values.env | default dict }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.httpPort }}
+              containerPort: {{ default "8080" (get $env "HTTP_PORT") | int }}
               protocol: TCP
             - name: grpc
-              containerPort: {{ .Values.service.grpcPort }}
+              containerPort: {{ default "9090" (get $env "GRPC_PORT") | int }}
               protocol: TCP
           envFrom:
             - configMapRef:
@@ -90,6 +102,10 @@ spec:
             sizeLimit: {{ .Values.ephemeralStorage.tmpSizeLimit }}
   strategy:
     canary:
+      {{- with .Values.canary.trafficRouting }}
+      trafficRouting:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       steps:
         - setWeight: {{ .Values.canary.steps.firstWeight }}
         - pause:
@@ -97,11 +113,27 @@ spec:
         - analysis:
             templates:
               - templateName: {{ include "rag-prompt-registry.fullname" . }}-canary-analysis
+            args:
+              - name: namespace
+                value: {{ .Release.Namespace | quote }}
+              - name: release
+                value: {{ .Release.Name | quote }}
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
         - setWeight: {{ .Values.canary.steps.secondWeight }}
         - pause:
             duration: {{ .Values.canary.steps.secondPauseDuration }}
         - analysis:
             templates:
               - templateName: {{ include "rag-prompt-registry.fullname" . }}-canary-analysis
+            args:
+              - name: namespace
+                value: {{ .Release.Namespace | quote }}
+              - name: release
+                value: {{ .Release.Name | quote }}
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
 {{- end }}
 

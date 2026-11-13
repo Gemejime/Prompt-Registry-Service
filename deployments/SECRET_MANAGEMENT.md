@@ -52,24 +52,25 @@ Configure the following secrets under **Settings → Environments** for both `st
 
 | GitHub Secret | Description |
 | :--- | :--- |
-| `KUBECONFIG_B64` | Base64-encoded kubeconfig for a least-privilege deploy `ServiceAccount` scoped to the `rag-platform` namespace |
+| `KUBECONFIG_B64` | Base64-encoded kubeconfig for a least-privilege deploy `ServiceAccount` scoped to the pre-provisioned `rag-platform` namespace |
 | `POSTGRES_DSN` | Target environment PostgreSQL/PgBouncer connection URI |
 | `JWT_HMAC_SECRET` | Target environment HS256 JWT signing/verification secret |
 | `REDIS_PASSWORD` | Target environment Redis `AUTH` password (optional if Redis auth is disabled) |
 
 ### How Injection Works in `deploy.yml`
 
-1. **Validate Secrets**: Fails fast if `KUBECONFIG_B64`, `POSTGRES_DSN`, or `JWT_HMAC_SECRET` is missing.
+1. **Validate Namespace & Secrets**: Fails fast if the pre-provisioned target namespace does not exist or if `KUBECONFIG_B64`, `POSTGRES_DSN`, or `JWT_HMAC_SECRET` is missing.
 2. **Decode Kubeconfig**: Writes `KUBECONFIG` to `$RUNNER_TEMP/kubeconfig` with `0600` permissions.
 3. **Out-of-Band Secret Upsert**:
    - Writes `POSTGRES_DSN`, `REDIS_PASSWORD`, and `JWT_HMAC_SECRET` to a `0600` temporary file (`$RUNNER_TEMP/secret.env`) without echoing values to stdout or passing credentials in CLI flags.
    - Runs `kubectl create secret generic rag-prompt-registry-service-secret --from-env-file="$RUNNER_TEMP/secret.env" --dry-run=client -o yaml | kubectl apply -f -`.
    - Deletes `$RUNNER_TEMP/secret.env` immediately.
 4. **Helm Release Deployment**:
-   - Invokes `helm upgrade --install` with `--set env.secretName=rag-prompt-registry-service-secret` and `--set secrets.existingSecret=rag-prompt-registry-service-secret`.
-   - Because `existingSecret` / `env.secretName` is set, Helm skips rendering [secret.yaml](helm/rag-prompt-registry/templates/secret.yaml) and stores zero credentials inside Helm release Secret objects.
+   - Invokes `helm upgrade --install` with `--set env.secretName=rag-prompt-registry-service-secret` and `--set secrets.existingSecret=rag-prompt-registry-service-secret` (passing validated `image.tag` via `--set-string` when provided).
+   - Because `existingSecret` / `env.secretName` is set, Helm skips rendering [secret.yaml](helm/rag-prompt-registry/templates/secret.yaml) and stores zero credentials inside Helm release Secret objects. Chart-managed Secrets include `"helm.sh/resource-policy": keep`, and `secret.yaml` blocks switching `existingSecret` to a Helm-owned Secret until that keep policy handoff is recorded.
+   - When `canary_enabled=true`, the workflow waits up to 15 minutes for the Argo `Rollout` to reach `Healthy` and fails on `Degraded`/abort or timeout.
 5. **Secret Rotation Rollout**:
-   - If `kubectl apply` reports that the Secret was `created` or `configured`, the workflow triggers `kubectl rollout restart deployment/rag-prompt-registry-service` (when `canary_enabled=false`) and waits for readiness.
+   - If `kubectl apply` reports that the Secret was `created` or `configured`, or if the workload/pods have not yet reconciled the Secret's `resourceVersion` annotation (`rag-prompt-registry/secret-resource-version`), the workflow triggers a restart (`deployment/rag-prompt-registry-service` or `rollout.argoproj.io/rag-prompt-registry-service` when `canary_enabled=true`) and waits for readiness before recording the reconciled `resourceVersion`.
 6. **Always Clean Up**:
    - An `if: always()` step removes `$RUNNER_TEMP/kubeconfig` and `$RUNNER_TEMP/secret.env`.
 
@@ -124,6 +125,16 @@ kubectl create secret generic rag-prompt-registry-service-secret \
 ## 5. Secret Rotation & Logging Guardrails
 
 - **Rotating `JWT_HMAC_SECRET`**: Coordinate with calling `go-prompt-sdk` orchestrators (`JWT_HMAC_SECRET` / `ClientConfig.JWTSecret`) before rolling the control plane pods so minted 24-hour service JWTs remain valid across the rollout window.
-- **Rotating `POSTGRES_DSN` / `REDIS_PASSWORD`**: Update the GitHub Environment secret (or Vault path), re-run `.github/workflows/deploy.yml`, and verify `/ready` returns `200 OK` (`postgres: connected`, `redis: reachable`).
+- **Rotating `POSTGRES_DSN`**:
+  1. Provision or rotate the database/PgBouncer credentials on the PostgreSQL/PgBouncer side (using staged/dual credentials when zero downtime is required).
+  2. Update `POSTGRES_DSN` in GitHub Environment Secrets (or Vault/ESO) and re-run `.github/workflows/deploy.yml`.
+  3. Confirm the control plane rollout completes and `/ready` returns `200 OK` (`postgres: connected`).
+- **Rotating `REDIS_PASSWORD` (Coordinated Cluster & Consumer Rotation)**:
+  - `bitnami/redis-cluster` reads `existingSecret` (`rag-prompt-registry-service-secret`, key `REDIS_PASSWORD`) only when Redis containers start; updating the Kubernetes Secret alone does **not** rotate authentication on running Redis Cluster pods.
+  - Perform rotation in the following coordinated sequence:
+    1. Update `REDIS_PASSWORD` in GitHub Environment Secrets / Vault and apply the updated `rag-prompt-registry-service-secret` in `rag-platform`.
+    2. Rotate server authentication across all Redis Cluster nodes (via `CONFIG SET requirepass` / `masterauth` + `CONFIG REWRITE` during a staged transition, or a coordinated rolling restart / `helm upgrade` of `rag-prompt-registry-service-redis` so StatefulSet pods boot with the updated `existingSecret` `REDIS_PASSWORD`).
+    3. Roll all application consumers (`rag-prompt-registry-service` control plane pods and `rag-search-orchestrator` data plane pods running `go-prompt-sdk` Pub/Sub subscribers) so they authenticate with the new `REDIS_PASSWORD`.
+    4. Consider rotation complete **only after** the new credentials are active on all Redis nodes and consumers, `redis-cli cluster info` reports `cluster_state:ok`, control plane `/ready` returns `200 OK` (`postgres: connected`, `redis: reachable`), and `prompt_sdk_pubsub_connected == 1`.
 - **Secured Logging Invariant**: Application logs (`log/slog` JSON) and `postgres.SanitizeDSNError` mask DSNs and passwords; CI enforces `security-and-logging-audit` in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) to block accidental secret logging.
 

@@ -48,5 +48,7 @@ ehthumbs.db
 
 # Temporary files & logs
 tmp/
+__pycache__/
+*.pyc
 *.log
 

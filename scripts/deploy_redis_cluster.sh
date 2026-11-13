@@ -36,6 +36,9 @@ helm upgrade --install "$RELEASE_NAME" bitnami/redis-cluster \
   --namespace "$NAMESPACE" \
   --version "11.*" \
   -f "$VALUES_FILE" \
+  --set "fullnameOverride=$RELEASE_NAME" \
+  --set "existingSecret=$SECRET_NAME" \
+  --set "existingSecretPasswordKey=REDIS_PASSWORD" \
   --wait \
   --timeout 10m
 

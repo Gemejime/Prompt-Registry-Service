@@ -12,6 +12,9 @@ spec:
   selector:
     matchLabels:
       {{- include "rag-prompt-registry.selectorLabels" . | nindent 6 }}
+  podTargetLabels:
+    - app.kubernetes.io/instance
+    - rollouts-pod-template-hash
   endpoints:
     - port: http
       path: {{ .Values.serviceMonitor.path }}

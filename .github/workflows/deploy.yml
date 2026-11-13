@@ -50,7 +50,9 @@ jobs:
           version: v3.16.3
 
       - name: Lint Helm Chart
-        run: helm lint deployments/helm/rag-prompt-registry
+        run: |
+          helm lint deployments/helm/rag-prompt-registry --set secrets.existingSecret=rag-prompt-registry-service-secret
+          helm lint deployments/helm/rag-prompt-registry --set secrets.jwtHmacSecret=lint-only-placeholder-secret
 
   deploy:
     name: Inject Secrets & Deploy (${{ inputs.environment }})
@@ -107,9 +109,13 @@ jobs:
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET }}
+          CANARY_ENABLED: ${{ inputs.canary_enabled }}
         run: |
           set -euo pipefail
-          kubectl create namespace "$K8S_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          if ! kubectl get namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
+            echo "::error::Target namespace '$K8S_NAMESPACE' does not exist. Provision it separately before running this namespace-scoped deploy job."
+            exit 1
+          fi
 
           SECRET_ENV_FILE="$RUNNER_TEMP/secret.env"
           umask 077
@@ -127,36 +133,137 @@ jobs:
 
           rm -f "$SECRET_ENV_FILE"
 
-          if echo "$APPLY_OUT" | grep -qE '(configured|created)'; then
-            echo "secret_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "secret_changed=false" >> "$GITHUB_OUTPUT"
+          SECRET_RV=$(kubectl get secret "$K8S_SECRET_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.metadata.resourceVersion}')
+          echo "secret_resource_version=$SECRET_RV" >> "$GITHUB_OUTPUT"
+
+          WORKLOAD_KIND="deployment"
+          if [ "$CANARY_ENABLED" = "true" ]; then
+            WORKLOAD_KIND="rollout.argoproj.io"
           fi
 
+          PENDING_RESTART="false"
+          if echo "$APPLY_OUT" | grep -qE '(configured|created)'; then
+            PENDING_RESTART="true"
+          elif kubectl get "$WORKLOAD_KIND/$RELEASE_NAME" --namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
+            CONSUMED_RV=$(kubectl get "$WORKLOAD_KIND/$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.metadata.annotations.rag-prompt-registry/secret-resource-version}' 2>/dev/null || true)
+            if [ "$CONSUMED_RV" != "$SECRET_RV" ]; then
+              PENDING_RESTART="true"
+            else
+              POD_RVS=$(kubectl get pods --namespace "$K8S_NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o jsonpath='{range .items[*]}{.metadata.annotations.rag-prompt-registry/secret-resource-version}{"\n"}{end}' 2>/dev/null || true)
+              if [ -n "$POD_RVS" ]; then
+                while IFS= read -r pod_rv; do
+                  if [ "$pod_rv" != "$SECRET_RV" ]; then
+                    PENDING_RESTART="true"
+                    break
+                  fi
+                done <<< "$POD_RVS"
+              fi
+            fi
+          fi
+
+          echo "secret_changed=$PENDING_RESTART" >> "$GITHUB_OUTPUT"
+
       - name: Deploy Helm Release (Without Plaintext Secrets in Values)
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CANARY_ENABLED: ${{ inputs.canary_enabled }}
+          SECRET_RV: ${{ steps.inject_secret.outputs.secret_resource_version }}
         run: |
           set -euo pipefail
           HELM_ARGS=(
             upgrade --install "$RELEASE_NAME" "$CHART_PATH"
             --namespace "$K8S_NAMESPACE"
-            --create-namespace
             --set "env.secretName=$K8S_SECRET_NAME"
             --set "secrets.existingSecret=$K8S_SECRET_NAME"
-            --set "canary.enabled=${{ inputs.canary_enabled }}"
+            --set "canary.enabled=$CANARY_ENABLED"
             --wait
             --timeout 5m
           )
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            HELM_ARGS+=(--set "image.tag=${{ inputs.image_tag }}")
+          if [ -n "$IMAGE_TAG" ]; then
+            if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+              echo "::error::Invalid image_tag format: must match ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$"
+              exit 1
+            fi
+            HELM_ARGS+=(--set-string "image.tag=$IMAGE_TAG")
           fi
           helm "${HELM_ARGS[@]}"
 
+          if [ "$CANARY_ENABLED" = "true" ]; then
+            DEADLINE=$((SECONDS + 900))
+            while true; do
+              ABORTED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.abort}' 2>/dev/null || true)
+              PHASE=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+              GEN=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.metadata.generation}' 2>/dev/null || true)
+              OBS_GEN=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)
+              DESIRED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+              UPDATED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || true)
+              AVAILABLE=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)
+
+              if [ "$ABORTED" = "true" ] || [ "$PHASE" = "Degraded" ]; then
+                echo "::error::Argo Rollout '$RELEASE_NAME' failed (phase=$PHASE, abort=$ABORTED)."
+                exit 1
+              fi
+              if [ -n "$GEN" ] && [ "$OBS_GEN" = "$GEN" ] && [ "$PHASE" = "Healthy" ] && [ "$UPDATED" = "$DESIRED" ] && [ "$AVAILABLE" = "$DESIRED" ]; then
+                echo "Argo Rollout '$RELEASE_NAME' is Healthy ($AVAILABLE/$DESIRED updated and available)."
+                break
+              fi
+              if [ "$SECONDS" -ge "$DEADLINE" ]; then
+                echo "::error::Timed out waiting 15m for Argo Rollout '$RELEASE_NAME' (phase=${PHASE:-unknown})."
+                exit 1
+              fi
+              sleep 10
+            done
+            if [ "${{ steps.inject_secret.outputs.secret_changed }}" != "true" ]; then
+              kubectl annotate rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" "rag-prompt-registry/secret-resource-version=$SECRET_RV" --overwrite
+            fi
+          else
+            if [ "${{ steps.inject_secret.outputs.secret_changed }}" != "true" ]; then
+              kubectl annotate deployment "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" "rag-prompt-registry/secret-resource-version=$SECRET_RV" --overwrite
+            fi
+          fi
+
       - name: Rollout Restart on Secret Rotation
-        if: steps.inject_secret.outputs.secret_changed == 'true' && inputs.canary_enabled != true
+        if: steps.inject_secret.outputs.secret_changed == 'true'
+        env:
+          CANARY_ENABLED: ${{ inputs.canary_enabled }}
+          SECRET_RV: ${{ steps.inject_secret.outputs.secret_resource_version }}
         run: |
           set -euo pipefail
-          kubectl rollout restart "deployment/$RELEASE_NAME" --namespace "$K8S_NAMESPACE"
-          kubectl rollout status "deployment/$RELEASE_NAME" --namespace "$K8S_NAMESPACE" --timeout=5m
+          RESTART_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          if [ "$CANARY_ENABLED" = "true" ]; then
+            kubectl patch rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" --type=merge \
+              -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$RESTART_TS\",\"rag-prompt-registry/secret-resource-version\":\"$SECRET_RV\"}}}}}"
+            DEADLINE=$((SECONDS + 900))
+            while true; do
+              ABORTED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.abort}' 2>/dev/null || true)
+              PHASE=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+              GEN=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.metadata.generation}' 2>/dev/null || true)
+              OBS_GEN=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)
+              DESIRED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+              UPDATED=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || true)
+              AVAILABLE=$(kubectl get rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)
+
+              if [ "$ABORTED" = "true" ] || [ "$PHASE" = "Degraded" ]; then
+                echo "::error::Argo Rollout restart for '$RELEASE_NAME' failed (phase=$PHASE, abort=$ABORTED)."
+                exit 1
+              fi
+              if [ -n "$GEN" ] && [ "$OBS_GEN" = "$GEN" ] && [ "$PHASE" = "Healthy" ] && [ "$UPDATED" = "$DESIRED" ] && [ "$AVAILABLE" = "$DESIRED" ]; then
+                echo "Argo Rollout restart '$RELEASE_NAME' completed ($AVAILABLE/$DESIRED healthy)."
+                break
+              fi
+              if [ "$SECONDS" -ge "$DEADLINE" ]; then
+                echo "::error::Timed out waiting 15m for Argo Rollout restart '$RELEASE_NAME' (phase=${PHASE:-unknown})."
+                exit 1
+              fi
+              sleep 10
+            done
+            kubectl annotate rollout.argoproj.io "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" "rag-prompt-registry/secret-resource-version=$SECRET_RV" --overwrite
+          else
+            kubectl patch deployment "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" --type=merge \
+              -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$RESTART_TS\",\"rag-prompt-registry/secret-resource-version\":\"$SECRET_RV\"}}}}}"
+            kubectl rollout status "deployment/$RELEASE_NAME" --namespace "$K8S_NAMESPACE" --timeout=5m
+            kubectl annotate deployment "$RELEASE_NAME" --namespace "$K8S_NAMESPACE" "rag-prompt-registry/secret-resource-version=$SECRET_RV" --overwrite
+          fi
 
       - name: Clean Up Temporary Credentials
         if: always()

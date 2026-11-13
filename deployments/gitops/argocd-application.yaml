@@ -15,6 +15,9 @@ spec:
       releaseName: rag-prompt-registry-service
       valueFiles:
         - values.yaml
+      parameters:
+        - name: secrets.existingSecret
+          value: rag-prompt-registry-service-secret
   destination:
     server: https://kubernetes.default.svc
     namespace: rag-platform

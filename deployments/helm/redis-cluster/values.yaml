@@ -3,10 +3,7 @@
 # Release: rag-prompt-registry-service-redis
 # Namespace: rag-platform
 
-global:
-  redis:
-    existingSecret: "rag-prompt-registry-service-secret"
-    existingSecretPasswordKey: "REDIS_PASSWORD"
+fullnameOverride: "rag-prompt-registry-service-redis"
 
 image:
   registry: docker.io
@@ -15,6 +12,8 @@ image:
   pullPolicy: IfNotPresent
 
 usePassword: true
+existingSecret: "rag-prompt-registry-service-secret"
+existingSecretPasswordKey: "REDIS_PASSWORD"
 
 cluster:
   init: true
@@ -30,13 +29,13 @@ redis:
     limits:
       cpu: 500m
       memory: 1Gi
-  extraFlags:
-    - "--appendonly yes"
-    - "--appendfsync everysec"
-    - "--save 900 1"
-    - "--save 300 10"
-    - "--save 60 10000"
-    - "--maxmemory-policy allkeys-lru"
+  configmap: |-
+    appendonly yes
+    appendfsync everysec
+    save 900 1
+    save 300 10
+    save 60 10000
+    maxmemory-policy allkeys-lru
   livenessProbe:
     enabled: true
     initialDelaySeconds: 10

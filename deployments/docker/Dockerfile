@@ -4,6 +4,8 @@
 FROM golang:1.26-alpine AS builder
 
 ARG VERSION=1.0.0
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -19,7 +21,7 @@ COPY proto/ ./proto/
 COPY openapi/ ./openapi/
 
 # Compile static binary with CGO disabled and stripped symbols
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/prompt-registry-server \

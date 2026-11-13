@@ -145,6 +145,9 @@ def find_block_range(lines: List[str], block_key: str) -> Optional[Tuple[int, in
             end_idx += 1
             last_content_idx = end_idx
             continue
+        if line.lstrip().startswith("#"):
+            end_idx += 1
+            continue
         break
 
     return start_idx, last_content_idx
