@@ -139,7 +139,24 @@ func isEnclosedInXMLTag(pattern string, openIdx, closeEnd int, tag string) bool 
 func WriteXMLEscaped(dst *bytes.Buffer, s string) {
 	start := 0
 	n := len(s)
-	for i := 0; i < n; i++ {
+	for i := 0; i < n; {
+		for i+8 <= n {
+			w := uint64(s[i]) | uint64(s[i+1])<<8 | uint64(s[i+2])<<16 | uint64(s[i+3])<<24 |
+				uint64(s[i+4])<<32 | uint64(s[i+5])<<40 | uint64(s[i+6])<<48 | uint64(s[i+7])<<56
+			xAmp := w ^ 0x2626262626262626
+			xLt := w ^ 0x3c3c3c3c3c3c3c3c
+			xGt := w ^ 0x3e3e3e3e3e3e3e3e
+			if (((xAmp-0x0101010101010101)&^xAmp |
+				(xLt-0x0101010101010101)&^xLt |
+				(xGt-0x0101010101010101)&^xGt) & 0x8080808080808080) == 0 {
+				i += 8
+				continue
+			}
+			break
+		}
+		if i >= n {
+			break
+		}
 		switch s[i] {
 		case '&':
 			if i > start {
@@ -160,6 +177,7 @@ func WriteXMLEscaped(dst *bytes.Buffer, s string) {
 			dst.WriteString("&gt;")
 			start = i + 1
 		}
+		i++
 	}
 	if start < n {
 		dst.WriteString(s[start:])

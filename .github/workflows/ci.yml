@@ -66,6 +66,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
+          check-latest: true
           cache: true
 
       - name: Install Govulncheck
@@ -138,6 +139,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
+          check-latest: true
           cache: true
 
       - name: Run Unit Tests
@@ -154,6 +156,14 @@ jobs:
             go test -v -bench=. -benchmem ./pkg/promptsdk/...
           else
             echo "go.mod not yet created; skipping benchmarks"
+          fi
+
+      - name: Run SDK Load & Allocation Tests
+        run: |
+          if [ -f go.mod ]; then
+            go test -v ./test/sdk/...
+          else
+            echo "go.mod not yet created; skipping SDK tests"
           fi
 
       - name: Run Integration Tests

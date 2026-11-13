@@ -161,13 +161,14 @@ func TestPhase4Sustained10000RPSAndZeroMemoryLeak(t *testing.T) {
 					TargetDialect: dialects[workerID%len(dialects)],
 					Variables:     vars,
 				}
+				var clk preciseClock
 				for i := 0; i < n; i++ {
-					t0 := time.Now()
+					t0 := clk.now()
 					buf := promptsdk.AcquireBuffer()
 					rErr := client.RenderToBuffer(ctx, buf, "rag-financial-summary", "@production", opts)
 					bufLen := buf.Len()
 					promptsdk.ReleaseBuffer(buf)
-					durations[baseIdx+i] = time.Since(t0)
+					durations[baseIdx+i] = time.Duration(clk.now() - t0)
 					if rErr != nil {
 						errCh <- rErr
 						return
@@ -199,8 +200,11 @@ func TestPhase4Sustained10000RPSAndZeroMemoryLeak(t *testing.T) {
 		t.Logf("Batch %d: %d renders in %v (%.0f RPS) | P50=%v P99=%v | HeapAlloc=%d KiB HeapObjects=%d NumGC=%d",
 			batch+1, batchSize, batchElapsed, rps, p50, p99, ms.HeapAlloc/1024, ms.HeapObjects, ms.NumGC)
 
-		if p99 > 5*time.Millisecond {
-			t.Fatalf("batch %d P99 latency %v exceeded 5ms CI jitter guard", batch+1, p99)
+		if rps < 10000 {
+			t.Fatalf("batch %d throughput %.0f RPS below 10,000 RPS target", batch+1, rps)
+		}
+		if p99 > 500*time.Microsecond {
+			t.Fatalf("batch %d P99 latency %v exceeded 0.5ms SLO", batch+1, p99)
 		}
 
 		if batch == 0 {
@@ -289,6 +293,21 @@ func TestPhase4ControlPlaneMemoryFootprint(t *testing.T) {
 	}
 	_ = json.Unmarshal(scBytes, &scResp)
 
+	var peakRSSBytes uint64
+	recordRSS := func() {
+		cur, peak, ok := sampleProcessRSS()
+		if !ok {
+			return
+		}
+		if cur > peakRSSBytes {
+			peakRSSBytes = cur
+		}
+		if peak > peakRSSBytes {
+			peakRSSBytes = peak
+		}
+	}
+	recordRSS()
+
 	// Drive 200 administrative mutations + reads to simulate sustained control plane workload.
 	for i := 0; i < 50; i++ {
 		tmplName := fmt.Sprintf("cp-load-tmpl-%03d", i)
@@ -320,22 +339,24 @@ func TestPhase4ControlPlaneMemoryFootprint(t *testing.T) {
 			"updated_by":       "load-profiler",
 		})
 		doReq(http.MethodGet, "/v1/templates/"+tmplName+"/tags/@production", nil)
+		recordRSS()
 	}
 
 	runtime.GC()
+	recordRSS()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 
 	heapInuseMiB := float64(ms.HeapInuse) / (1024 * 1024)
 	heapAllocMiB := float64(ms.HeapAlloc) / (1024 * 1024)
-	sysMiB := float64(ms.Sys) / (1024 * 1024)
-	t.Logf("Control Plane Memory Footprint after 200 admin ops: HeapAlloc=%.2f MiB, HeapInuse=%.2f MiB, Sys=%.2f MiB",
-		heapAllocMiB, heapInuseMiB, sysMiB)
+	peakRSSMiB := float64(peakRSSBytes) / (1024 * 1024)
+	t.Logf("Control Plane Memory Footprint after 200 admin ops: HeapAlloc=%.2f MiB, HeapInuse=%.2f MiB, PeakRSS=%.2f MiB",
+		heapAllocMiB, heapInuseMiB, peakRSSMiB)
 
 	if heapInuseMiB > 64.0 {
 		t.Fatalf("Control Plane HeapInuse %.2f MiB exceeded 64 MiB steady-state target", heapInuseMiB)
 	}
-	if sysMiB > 128.0 {
-		t.Fatalf("Control Plane Sys %.2f MiB exceeded 128 MiB peak RSS limit", sysMiB)
+	if peakRSSMiB > 128.0 {
+		t.Fatalf("Control Plane PeakRSS %.2f MiB exceeded 128 MiB peak RSS limit", peakRSSMiB)
 	}
 }

@@ -32,8 +32,10 @@ var version = "dev"
 
 // serverReadiness implements httptransport.ReadinessChecker for the /ready endpoint.
 type serverReadiness struct {
-	pgPool      *pgxpool.Pool
-	redisClient *redis.L2CacheClient
+	pgPool          *pgxpool.Pool
+	redisClient     *redis.L2CacheClient
+	redisConfigured bool
+	allowInMemory   bool
 }
 
 // CheckPostgres verifies PostgreSQL connection pool reachability when a pool is configured.
@@ -44,12 +46,19 @@ func (sr *serverReadiness) CheckPostgres(ctx context.Context) error {
 	return nil
 }
 
-// CheckRedis verifies Redis cluster reachability when a Redis client is configured.
+// CheckRedis verifies Redis cluster reachability when Redis addresses are configured.
+// Empty Redis addresses fail readiness unless ALLOW_IN_MEMORY_STORE=true local-only mode is active.
 func (sr *serverReadiness) CheckRedis(ctx context.Context) error {
-	if sr.redisClient != nil {
-		return sr.redisClient.Ping(ctx)
+	if !sr.redisConfigured {
+		if sr.allowInMemory {
+			return nil
+		}
+		return fmt.Errorf("redis cluster addresses are not configured")
 	}
-	return nil
+	if sr.redisClient == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
+	return sr.redisClient.Ping(ctx)
 }
 
 // main initializes dependencies, starts the HTTP and gRPC control plane servers, and handles graceful shutdown.
@@ -98,6 +107,18 @@ func main() {
 	autoMigrate := config.GetEnvBool("POSTGRES_AUTO_MIGRATE", true)
 
 	redisAddrs := config.ParseCSV(config.GetEnv("REDIS_CLUSTER_ADDRS", config.GetEnv("REDIS_ADDRS", "")))
+	redisConfigured := len(redisAddrs) > 0
+	if !redisConfigured {
+		if !allowInMemoryStore {
+			logger.Error("REDIS_CLUSTER_ADDRS or REDIS_ADDRS is required unless ALLOW_IN_MEMORY_STORE=true is explicitly set",
+				slog.String("error_code", "CONFIG_MISSING_REDIS_ADDRS"),
+			)
+			os.Exit(1)
+		}
+		logger.Warn("using non-durable in-memory L2 cache because REDIS_CLUSTER_ADDRS and REDIS_ADDRS are unset and ALLOW_IN_MEMORY_STORE=true",
+			slog.String("cache_mode", "in_memory_local_only"),
+		)
+	}
 	redisDB := config.GetEnvInt("REDIS_DB", 0)
 	invalidationChan := config.GetEnv("REDIS_INVALIDATION_CHANNEL", redis.DefaultInvalidationChannel)
 	defaultTenant := config.GetEnv("DEFAULT_TENANT_ID", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
@@ -172,7 +193,7 @@ func main() {
 		ListHandler:    listHandler,
 		MutationMetric: mutationMetrics,
 		Invalidator:    invalidator,
-		Readiness:      &serverReadiness{pgPool: pgPool, redisClient: l2Cache},
+		Readiness:      &serverReadiness{pgPool: pgPool, redisClient: l2Cache, redisConfigured: redisConfigured, allowInMemory: allowInMemoryStore},
 		DefaultTenant:  defaultTenant,
 		OpenAPIPath:    openAPIPath,
 		WriteRateRPS:   writeRPS,

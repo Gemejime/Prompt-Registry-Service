@@ -2,6 +2,7 @@ package dialects
 
 import (
 	"bytes"
+	"strings"
 )
 
 // Meta Llama-3 canonical special header and turn termination tokens.
@@ -50,19 +51,22 @@ func WriteLlamaSanitized(dst *bytes.Buffer, s string) {
 	n := len(s)
 	i := 0
 	for i < n {
-		if s[i] == '<' {
-			if tokLen := matchReservedLlamaToken(s, i); tokLen > 0 {
-				if i > start {
-					dst.WriteString(s[start:i])
-				}
-				// Neutralize "<|token|>" as "< |token| >" so the control delimiter sequence is disarmed.
-				dst.WriteString("< |")
-				dst.WriteString(s[i+2 : i+tokLen-2])
-				dst.WriteString("| >")
-				i += tokLen
-				start = i
-				continue
+		rel := strings.IndexByte(s[i:], '<')
+		if rel < 0 {
+			break
+		}
+		i += rel
+		if tokLen := matchReservedLlamaToken(s, i); tokLen > 0 {
+			if i > start {
+				dst.WriteString(s[start:i])
 			}
+			// Neutralize "<|token|>" as "< |token| >" so the control delimiter sequence is disarmed.
+			dst.WriteString("< |")
+			dst.WriteString(s[i+2 : i+tokLen-2])
+			dst.WriteString("| >")
+			i += tokLen
+			start = i
+			continue
 		}
 		i++
 	}

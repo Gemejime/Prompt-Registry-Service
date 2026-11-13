@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -88,12 +89,21 @@ type schemaFlightCall struct {
 	err error
 }
 
-// dialectMetricCounters tracks zero-allocation atomic render counts and durations per dialect.
+// sdkRenderLatencyBuckets defines cumulative Prometheus histogram upper bounds (seconds)
+// calibrated for sub-millisecond SDK compilation (P99 <= 0.5ms SLO, 2ms alert threshold).
+var sdkRenderLatencyBuckets = [...]float64{
+	0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.05, 0.1,
+}
+
+// dialectMetricCounters tracks zero-allocation atomic render counts, durations, and histogram
+// buckets per dialect.
 type dialectMetricCounters struct {
-	successCount atomic.Uint64
-	successNanos atomic.Uint64
-	errorCount   atomic.Uint64
-	errorNanos   atomic.Uint64
+	successCount   atomic.Uint64
+	successNanos   atomic.Uint64
+	successBuckets [len(sdkRenderLatencyBuckets) + 1]atomic.Uint64
+	errorCount     atomic.Uint64
+	errorNanos     atomic.Uint64
+	errorBuckets   [len(sdkRenderLatencyBuckets) + 1]atomic.Uint64
 }
 
 // SDKMetricsSnapshot captures point-in-time Prometheus metrics for the embedded SDK.
@@ -1011,9 +1021,18 @@ func readRESPValue(r *bufio.Reader) (any, error) {
 	}
 }
 
-// recordRenderMetric updates the atomic duration and count counters with 0 heap allocations.
+// recordRenderMetric updates the atomic duration, count, and histogram bucket counters with 0 heap allocations.
 func (c *Client) recordRenderMetric(dialect DialectType, success bool, d time.Duration) {
 	nanos := uint64(d.Nanoseconds())
+	secs := d.Seconds()
+	bucketIdx := len(sdkRenderLatencyBuckets)
+	for i, bound := range sdkRenderLatencyBuckets {
+		if secs <= bound {
+			bucketIdx = i
+			break
+		}
+	}
+
 	var target *dialectMetricCounters
 	switch dialect {
 	case DialectLlamaSpecial:
@@ -1026,9 +1045,11 @@ func (c *Client) recordRenderMetric(dialect DialectType, success bool, d time.Du
 	if success {
 		target.successCount.Add(1)
 		target.successNanos.Add(nanos)
+		target.successBuckets[bucketIdx].Add(1)
 	} else {
 		target.errorCount.Add(1)
 		target.errorNanos.Add(nanos)
+		target.errorBuckets[bucketIdx].Add(1)
 	}
 }
 
@@ -1077,15 +1098,40 @@ func (c *Client) MetricsExposition() string {
 	return sb.String()
 }
 
-// writeDialectMetricLines renders Prometheus duration count and sum metrics for a specific dialect.
+// MetricsHandler returns an HTTP handler serving the SDK Prometheus exposition for scraping.
+func (c *Client) MetricsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, c.MetricsExposition())
+	})
+}
+
+// writeDialectMetricLines renders Prometheus histogram buckets, count, and sum metrics for a specific dialect.
 func writeDialectMetricLines(sb *strings.Builder, dialect string, m *dialectMetricCounters) {
 	succCnt := m.successCount.Load()
 	succSum := float64(m.successNanos.Load()) / 1e9
+	var cumSucc uint64
+	for i, bound := range sdkRenderLatencyBuckets {
+		cumSucc += m.successBuckets[i].Load()
+		sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"success\",le=%q} %d\n",
+			dialect, strconv.FormatFloat(bound, 'g', -1, 64), cumSucc))
+	}
+	cumSucc += m.successBuckets[len(sdkRenderLatencyBuckets)].Load()
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"success\",le=\"+Inf\"} %d\n", dialect, cumSucc))
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_sum{dialect=%q,status=\"success\"} %.6f\n", dialect, succSum))
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"success\"} %d\n", dialect, succCnt))
+
 	errCnt := m.errorCount.Load()
 	errSum := float64(m.errorNanos.Load()) / 1e9
-
-	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"success\"} %d\n", dialect, succCnt))
-	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_sum{dialect=%q,status=\"success\"} %.6f\n", dialect, succSum))
-	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"error\"} %d\n", dialect, errCnt))
+	var cumErr uint64
+	for i, bound := range sdkRenderLatencyBuckets {
+		cumErr += m.errorBuckets[i].Load()
+		sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"error\",le=%q} %d\n",
+			dialect, strconv.FormatFloat(bound, 'g', -1, 64), cumErr))
+	}
+	cumErr += m.errorBuckets[len(sdkRenderLatencyBuckets)].Load()
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"error\",le=\"+Inf\"} %d\n", dialect, cumErr))
 	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_sum{dialect=%q,status=\"error\"} %.6f\n", dialect, errSum))
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"error\"} %d\n", dialect, errCnt))
 }

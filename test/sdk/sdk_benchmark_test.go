@@ -118,15 +118,16 @@ func TestRenderP99Latency50KBContext(t *testing.T) {
 
 	const iterations = 1000
 	durations := make([]time.Duration, iterations)
+	var clk preciseClock
 	for i := 0; i < iterations; i++ {
-		start := time.Now()
+		start := clk.now()
 		buf := promptsdk.AcquireBuffer()
 		if err := client.RenderToBuffer(ctx, buf, "rag-financial-summary", "@production", opts); err != nil {
 			promptsdk.ReleaseBuffer(buf)
 			t.Fatalf("RenderToBuffer failed: %v", err)
 		}
 		promptsdk.ReleaseBuffer(buf)
-		durations[i] = time.Since(start)
+		durations[i] = time.Duration(clk.now() - start)
 	}
 
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })

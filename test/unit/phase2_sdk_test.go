@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -633,6 +635,8 @@ func TestClientSingleflightCoalescingPubSubAndSecuredLogging(t *testing.T) {
 	// 3. Verify Prometheus Metrics Exposition
 	metricsText := sdkClient.MetricsExposition()
 	for _, metricName := range []string{
+		`prompt_sdk_render_duration_seconds_bucket{dialect="DIALECT_OPENAI_STANDARD",status="success",le="0.0005"}`,
+		`prompt_sdk_render_duration_seconds_bucket{dialect="DIALECT_OPENAI_STANDARD",status="success",le="+Inf"}`,
 		"prompt_sdk_render_duration_seconds_count",
 		"prompt_sdk_cache_hit_ratio{tier=\"L1_version\"}",
 		"prompt_sdk_cache_hit_ratio{tier=\"L1_tag\"}",
@@ -641,6 +645,12 @@ func TestClientSingleflightCoalescingPubSubAndSecuredLogging(t *testing.T) {
 		if !strings.Contains(metricsText, metricName) {
 			t.Fatalf("missing expected metric %q in exposition:\n%s", metricName, metricsText)
 		}
+	}
+
+	metricsRec := httptest.NewRecorder()
+	sdkClient.MetricsHandler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if metricsRec.Code != http.StatusOK || !strings.Contains(metricsRec.Body.String(), "prompt_sdk_render_duration_seconds_bucket") {
+		t.Fatalf("MetricsHandler() failed: status=%d body=%s", metricsRec.Code, metricsRec.Body.String())
 	}
 
 	// 4. Secured Logging Audit (Invariant 2): neither confidentialSystemPrompt nor confidentialContext may appear in logs!

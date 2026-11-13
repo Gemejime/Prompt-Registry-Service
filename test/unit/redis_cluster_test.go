@@ -95,6 +95,7 @@ func TestRedisClusterRedirectMOVEDAndASK(t *testing.T) {
 	shardAddr := startMockRedisServer(t, func(conn net.Conn) {
 		r := bufio.NewReader(conn)
 		askingNext := false
+		connAuthed := false
 		for {
 			args, err := readRESPArray(r)
 			if err != nil || len(args) == 0 {
@@ -104,6 +105,7 @@ func TestRedisClusterRedirectMOVEDAndASK(t *testing.T) {
 			switch cmd {
 			case "AUTH":
 				if len(args) == 2 && args[1] == expectedPass {
+					connAuthed = true
 					mu.Lock()
 					shardAuth = true
 					mu.Unlock()
@@ -112,17 +114,29 @@ func TestRedisClusterRedirectMOVEDAndASK(t *testing.T) {
 					_, _ = conn.Write([]byte("-ERR invalid password\r\n"))
 				}
 			case "ASKING":
+				if !connAuthed {
+					_, _ = conn.Write([]byte("-NOAUTH Authentication required.\r\n"))
+					return
+				}
 				askingNext = true
 				mu.Lock()
 				askingSeen = true
 				mu.Unlock()
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			case "SET":
+				if !connAuthed {
+					_, _ = conn.Write([]byte("-NOAUTH Authentication required.\r\n"))
+					return
+				}
 				mu.Lock()
 				store[args[1]] = args[2]
 				mu.Unlock()
 				_, _ = conn.Write([]byte("+OK\r\n"))
 			case "GET":
+				if !connAuthed {
+					_, _ = conn.Write([]byte("-NOAUTH Authentication required.\r\n"))
+					return
+				}
 				if !askingNext {
 					_, _ = conn.Write([]byte("-ERR expected ASKING before redirected GET\r\n"))
 					return
@@ -261,7 +275,7 @@ func TestRedisClusterDeliverablesPresentAndAligned(t *testing.T) {
 			relPath: filepath.Join("deployments", "docker", "docker-compose.redis.yml"),
 			contains: []string{
 				"bitnami/redis:7.2-debian-12",
-				`"6379:6379"`,
+				`"127.0.0.1:6379:6379"`,
 				`REDIS_AOF_ENABLED: "yes"`,
 				"redis-cli ping",
 			},

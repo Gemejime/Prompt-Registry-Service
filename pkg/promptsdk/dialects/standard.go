@@ -13,7 +13,23 @@ const hexDigits = "0123456789abcdef"
 func WriteJSONEscapedString(dst *bytes.Buffer, s string) {
 	start := 0
 	n := len(s)
-	for i := 0; i < n; i++ {
+	for i := 0; i < n; {
+		for i+8 <= n {
+			w := uint64(s[i]) | uint64(s[i+1])<<8 | uint64(s[i+2])<<16 | uint64(s[i+3])<<24 |
+				uint64(s[i+4])<<32 | uint64(s[i+5])<<40 | uint64(s[i+6])<<48 | uint64(s[i+7])<<56
+			xQuote := w ^ 0x2222222222222222
+			xSlash := w ^ 0x5c5c5c5c5c5c5c5c
+			if (((xQuote-0x0101010101010101)&^xQuote |
+				(xSlash-0x0101010101010101)&^xSlash |
+				((w - 0x2020202020202020) & ^w)) & 0x8080808080808080) == 0 {
+				i += 8
+				continue
+			}
+			break
+		}
+		if i >= n {
+			break
+		}
 		b := s[i]
 		switch b {
 		case '"':
@@ -74,6 +90,7 @@ func WriteJSONEscapedString(dst *bytes.Buffer, s string) {
 				start = i + 1
 			}
 		}
+		i++
 	}
 	if start < n {
 		dst.WriteString(s[start:])

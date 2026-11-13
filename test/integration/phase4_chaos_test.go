@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -377,12 +378,13 @@ func TestPhase4ChaosPodAndRedisOutageInjection(t *testing.T) {
 
 	const latencyIters = 1000
 	renderDurations := make([]time.Duration, latencyIters)
+	var clk preciseClock
 	for i := 0; i < latencyIters; i++ {
-		t0 := time.Now()
+		t0 := clk.now()
 		b := promptsdk.AcquireBuffer()
 		rErr := sdkClient.RenderToBuffer(ctx, b, "phase4-resilient-rag", "@production", outageOpts)
 		promptsdk.ReleaseBuffer(b)
-		renderDurations[i] = time.Since(t0)
+		renderDurations[i] = time.Duration(clk.now() - t0)
 		if rErr != nil {
 			t.Fatalf("RenderToBuffer during outage failed: %v", rErr)
 		}
@@ -401,8 +403,15 @@ func TestPhase4ChaosPodAndRedisOutageInjection(t *testing.T) {
 	if avgRender > 500*time.Microsecond {
 		t.Fatalf("average SDK render latency during outage %v exceeded 0.5ms SLO", avgRender)
 	}
-	if p99 > 5*time.Millisecond {
-		t.Fatalf("P99 render latency during outage %v exceeded 5ms CI jitter guard", p99)
+	if os.Getenv("CI") == "" {
+		if p99 > 500*time.Microsecond {
+			t.Fatalf("P99 render latency during outage %v exceeded 0.5ms SLO", p99)
+		}
+	} else {
+		if p99 > 5*time.Millisecond {
+			t.Fatalf("P99 render latency during outage %v exceeded 5ms CI jitter guard", p99)
+		}
+		t.Logf("Skipping strict 0.5ms P99 assertion on CI runner (CI=%q); observed P99=%v", os.Getenv("CI"), p99)
 	}
 }
 

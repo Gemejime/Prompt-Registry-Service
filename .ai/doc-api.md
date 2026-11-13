@@ -1165,7 +1165,7 @@ type PromptSDK interface {
 
 | Metric Name | Type | Labels | Description |
 | :--- | :--- | :--- | :--- |
-| `prompt_sdk_render_duration_seconds` | Histogram | `dialect`, `status` | SDK in-process compilation latency (Target P99 $\le 0.5$ms) |
+| `prompt_sdk_render_duration_seconds` | Histogram | `dialect`, `status` | SDK in-process compilation latency with cumulative `le` buckets (`0.00005`..`0.1`, `+Inf`) exposed via `Client.MetricsHandler()` / `RAGPipeline.MetricsHandler()` and scraped by `sdkMonitor` `PodMonitor` (Target P99 $\le 0.5$ms) |
 | `prompt_registry_mutation_duration_seconds` | Histogram | `operation`, `status` | Control plane write latencies |
 | `prompt_registry_pointer_rollbacks_total` | Counter | _none_ | Semantic tag pointer rollbacks executed (`is_rollback == true`) |
 | `prompt_sdk_cache_hit_ratio` | Gauge | `tier` (L1_version, L1_tag) | Local SDK memory hit ratio (Target $>99.9\%$) |
@@ -1180,7 +1180,7 @@ type PromptSDK interface {
 ## 9. Deployment, Containerization & Prometheus Alerting Specifications
 
 ### Distroless Container (`deployments/docker/Dockerfile`)
-- **Builder Stage**: `golang:1.26-alpine` compiling `./cmd/prompt-registry-server` with `CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w -X main.version=${VERSION}"`.
+- **Builder Stage**: `golang:1.26-alpine` compiling `./cmd/prompt-registry-server` with `CGO_ENABLED=0`, `GOOS=${TARGETOS}`, `GOARCH=${TARGETARCH}`, `-trimpath`, `-ldflags="-s -w -X main.version=${VERSION}"`, and repository-root `.dockerignore`.
 - **Runtime Stage**: `gcr.io/distroless/static-debian12:nonroot`, `WORKDIR /app`, `USER 65532:65532`, `readOnlyRootFilesystem: true` compatible.
 - **Packaged Static Assets**: Copies `openapi/openapi.yaml` to `/app/openapi/openapi.yaml` for `/docs`, `/redoc`, `/api/docs`, and `/openapi.yaml`.
 - **Exposed Ports**: `8080` (HTTP REST, Doc API, `/healthz`, `/ready`, `/metrics`) and `9090` (gRPC Management API).
@@ -1244,8 +1244,8 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
 | `ElevatedPointerRollbacks` | `increase(prompt_registry_pointer_rollbacks_total[15m]) > 0` | `0m` | `warning` | Semantic tag pointer rollback executed within 15m window |
 
 ### GitOps ArgoCD & Argo Rollouts (`deployments/gitops/argocd-application.yaml`)
-- **ArgoCD Application**: Automated sync (`prune: true`, `selfHeal: true`) with exponential retry backoff targeting `deployments/helm/rag-prompt-registry`.
-- **Canary Cutover (`canary.enabled: true`)**: Renders `Rollout` + `AnalysisTemplate` with progressive traffic steps (`10%` -> 2m pause + analysis -> `50%` -> 5m pause + analysis -> `100%`), gating on `rate(prompt_invalidation_events_published_total{status="error"}[2m]) == 0`, `rate(prompt_registry_mutation_duration_seconds_count{status="error"}[2m]) == 0`, and zero `ElevatedPointerRollbacks` spikes.
+- **ArgoCD Application**: Automated sync (`prune: true`, `selfHeal: true`) with exponential retry backoff targeting `deployments/helm/rag-prompt-registry` and `secrets.existingSecret=rag-prompt-registry-service-secret`.
+- **Canary Cutover (`canary.enabled: true`)**: Renders `Rollout` (`canary.replicaCount: 10` for exact `10%`/`50%` replica-based weights, or optional `canary.trafficRouting`) + `AnalysisTemplate` with progressive traffic steps (`10%` -> 2m pause + analysis -> `50%` -> 5m pause + analysis -> `100%`), passing `namespace`, `release`, and `canary-hash` (`podTemplateHashValue: Latest`) args (exposed via `ServiceMonitor` `podTargetLabels`) and gating on `rate(prompt_invalidation_events_published_total{...}[2m]) == 0`, `rate(prompt_registry_mutation_duration_seconds_count{...}[2m]) == 0`, and zero `ElevatedPointerRollbacks` spikes, each requiring fresh `up == 1` target scrapes before `OR on() vector(0)` can satisfy the analysis.
 
 ---
 
@@ -1257,8 +1257,8 @@ At startup (`cmd/prompt-registry-server/main.go`), `config.LoadDotEnv(".env")` l
      `kubectl argo rollouts get rollout rag-prompt-registry-service -n rag-platform --watch`
    - Verify step progression (`10%` canary weight -> 2m pause & Prometheus analysis -> `50%` canary weight -> 5m pause & analysis -> `100%` promotion).
 3. **Evaluate Canary Telemetry**:
-   - Confirm Prometheus `AnalysisRun` queries pass with `0` errors on `prompt_invalidation_events_published_total{status="error"}` and `prompt_registry_mutation_duration_seconds_count{status="error"}`, and zero spikes on `prompt_registry_pointer_rollbacks_total`.
-   - If any `AnalysisTemplate` metric fails or `SDKHighRenderLatency` / `PubSubInvalidationFailure` fires, Argo Rollouts automatically aborts and reverts traffic to the stable ReplicaSet without human intervention.
+   - Confirm Prometheus `AnalysisRun` queries pass with `0` errors on `prompt_invalidation_events_published_total{status="error"}` and `prompt_registry_mutation_duration_seconds_count{status="error"}`, and zero spikes on `prompt_registry_pointer_rollbacks_total` (while verifying canary pods are freshly scraped with `up == 1`).
+   - If any configured `AnalysisTemplate` metric fails (`invalidation-publish-error-rate`, `mutation-error-rate`, or `elevated-pointer-rollbacks`), Argo Rollouts automatically aborts and reverts traffic to the stable ReplicaSet without human intervention (`SDKHighRenderLatency` and `PubSubInvalidationFailure` are Prometheus alerting rules, not `AnalysisTemplate` gates).
 4. **Manual Emergency Abort**:
    - To immediately halt a canary and restore 100% traffic to the stable ReplicaSet:
      `kubectl argo rollouts abort rag-prompt-registry-service -n rag-platform`

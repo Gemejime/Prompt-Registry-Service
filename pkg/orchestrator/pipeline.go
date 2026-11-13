@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -91,6 +93,24 @@ func (p *RAGPipeline) PromptSDK() promptsdk.PromptSDK {
 // Metrics returns the pipeline's Prometheus metrics collector.
 func (p *RAGPipeline) Metrics() *PipelineMetrics {
 	return p.metrics
+}
+
+// MetricsHandler returns an HTTP handler exposing both the embedded PromptSDK metrics
+// (including prompt_sdk_render_duration_seconds_bucket) and orchestrator pipeline metrics.
+func (p *RAGPipeline) MetricsHandler() http.Handler {
+	type sdkExposer interface {
+		MetricsExposition() string
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		if exposer, ok := p.promptSDK.(sdkExposer); ok {
+			_, _ = io.WriteString(w, exposer.MetricsExposition())
+		}
+		if p.metrics != nil {
+			_, _ = io.WriteString(w, p.metrics.MetricsExposition())
+		}
+	})
 }
 
 // Execute runs the complete 4-stage RAG pipeline.
