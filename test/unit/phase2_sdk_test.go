@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -645,6 +646,12 @@ func TestClientSingleflightCoalescingPubSubAndSecuredLogging(t *testing.T) {
 		if !strings.Contains(metricsText, metricName) {
 			t.Fatalf("missing expected metric %q in exposition:\n%s", metricName, metricsText)
 		}
+	}
+
+	infMatch := regexp.MustCompile(`prompt_sdk_render_duration_seconds_bucket\{dialect="DIALECT_OPENAI_STANDARD",status="success",le="\+Inf"\} (\d+)`).FindStringSubmatch(metricsText)
+	countMatch := regexp.MustCompile(`prompt_sdk_render_duration_seconds_count\{dialect="DIALECT_OPENAI_STANDARD",status="success"\} (\d+)`).FindStringSubmatch(metricsText)
+	if len(infMatch) < 2 || len(countMatch) < 2 || infMatch[1] != countMatch[1] {
+		t.Fatalf("expected +Inf bucket to match count identically: inf=%v count=%v", infMatch, countMatch)
 	}
 
 	metricsRec := httptest.NewRecorder()

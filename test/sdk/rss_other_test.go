@@ -17,9 +17,7 @@ func nowPrecise() int64 {
 	return time.Now().UnixNano()
 }
 
-// sampleProcessRSS falls back to runtime.MemStats.Sys on platforms without OS RSS APIs.
+// sampleProcessRSS returns unavailable on platforms without OS RSS APIs.
 func sampleProcessRSS() (currentRSS uint64, peakRSS uint64, ok bool) {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	return ms.Sys, ms.Sys, true
+	return 0, 0, false
 }

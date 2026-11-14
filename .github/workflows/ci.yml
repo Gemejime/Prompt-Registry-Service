@@ -166,6 +166,15 @@ jobs:
             echo "go.mod not yet created; skipping SDK tests"
           fi
 
+      - name: Run SDK Wall-Clock & Timing Benchmarks (Dedicated Hardware / Timing-Sensitive)
+        run: |
+          if [ -f go.mod ]; then
+            RUN_WALLCLOCK_BENCHMARKS=true go test -v -run '^TestPhase4Sustained10000RPSAndZeroMemoryLeak$' ./test/sdk/...
+          else
+            echo "go.mod not yet created; skipping timing benchmark"
+          fi
+        continue-on-error: true
+
       - name: Run Integration Tests
         run: |
           if [ -f go.mod ]; then

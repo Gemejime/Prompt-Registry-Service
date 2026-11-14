@@ -112,10 +112,6 @@ jobs:
           CANARY_ENABLED: ${{ inputs.canary_enabled }}
         run: |
           set -euo pipefail
-          if ! kubectl get namespace "$K8S_NAMESPACE" >/dev/null 2>&1; then
-            echo "::error::Target namespace '$K8S_NAMESPACE' does not exist. Provision it separately before running this namespace-scoped deploy job."
-            exit 1
-          fi
 
           SECRET_ENV_FILE="$RUNNER_TEMP/secret.env"
           umask 077

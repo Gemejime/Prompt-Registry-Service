@@ -1109,7 +1109,6 @@ func (c *Client) MetricsHandler() http.Handler {
 
 // writeDialectMetricLines renders Prometheus histogram buckets, count, and sum metrics for a specific dialect.
 func writeDialectMetricLines(sb *strings.Builder, dialect string, m *dialectMetricCounters) {
-	succCnt := m.successCount.Load()
 	succSum := float64(m.successNanos.Load()) / 1e9
 	var cumSucc uint64
 	for i, bound := range sdkRenderLatencyBuckets {
@@ -1120,9 +1119,8 @@ func writeDialectMetricLines(sb *strings.Builder, dialect string, m *dialectMetr
 	cumSucc += m.successBuckets[len(sdkRenderLatencyBuckets)].Load()
 	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"success\",le=\"+Inf\"} %d\n", dialect, cumSucc))
 	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_sum{dialect=%q,status=\"success\"} %.6f\n", dialect, succSum))
-	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"success\"} %d\n", dialect, succCnt))
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"success\"} %d\n", dialect, cumSucc))
 
-	errCnt := m.errorCount.Load()
 	errSum := float64(m.errorNanos.Load()) / 1e9
 	var cumErr uint64
 	for i, bound := range sdkRenderLatencyBuckets {
@@ -1133,5 +1131,5 @@ func writeDialectMetricLines(sb *strings.Builder, dialect string, m *dialectMetr
 	cumErr += m.errorBuckets[len(sdkRenderLatencyBuckets)].Load()
 	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_bucket{dialect=%q,status=\"error\",le=\"+Inf\"} %d\n", dialect, cumErr))
 	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_sum{dialect=%q,status=\"error\"} %.6f\n", dialect, errSum))
-	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"error\"} %d\n", dialect, errCnt))
+	sb.WriteString(fmt.Sprintf("prompt_sdk_render_duration_seconds_count{dialect=%q,status=\"error\"} %d\n", dialect, cumErr))
 }
