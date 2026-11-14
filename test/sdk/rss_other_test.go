@@ -3,7 +3,6 @@
 package sdk_test
 
 import (
-	"runtime"
 	"time"
 )
 
