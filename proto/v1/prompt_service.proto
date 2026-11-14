@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package rag.prompt.v1;
+
+option go_package = "rag-prompt-registry-service/proto/v1;promptv1";
+
+import "proto/v1/types.proto";
+
+service PromptRegistryService {
+  rpc CreateTemplate (CreateTemplateRequest) returns (CreateTemplateResponse);
+  rpc PublishVersion (PublishVersionRequest) returns (PublishVersionResponse);
+  rpc GetTemplateVersion (GetTemplateVersionRequest) returns (GetTemplateVersionResponse);
+  rpc PromoteTag (PromoteTagRequest) returns (PromoteTagResponse);
+  rpc ResolveTag (ResolveTagRequest) returns (ResolveTagResponse);
+  rpc RegisterSchema (RegisterSchemaRequest) returns (RegisterSchemaResponse);
+  rpc GetSchema (GetSchemaRequest) returns (GetSchemaResponse);
+  rpc ListTemplates (ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc ListSchemas (ListSchemasRequest) returns (ListSchemasResponse);
+}
+
+message CreateTemplateRequest {
+  string tenant_id = 1;
+  string name = 2;
+  TemplateAST raw_ast = 3;
+  string schema_id = 4; // Required: must resolve to a registered JSON schema in the same tenant
+  string author = 5;
+  string description = 6;
+}
+
+message CreateTemplateResponse {
+  string template_id = 1;
+  uint32 initial_version = 2;
+}
+
+message PublishVersionRequest {
+  string template_id = 1; // Template UUID or unique name within tenant
+  TemplateAST raw_ast = 2;
+  string schema_id = 3; // Required: must resolve to a registered JSON schema in the same tenant
+  string author = 4;
+  string tenant_id = 5; // Validated against caller JWT / x-tenant-id metadata
+}
+
+message PublishVersionResponse {
+  string template_id = 1;
+  uint32 version = 2;
+  string created_at = 3;
+}
+
+message PromoteTagRequest {
+  string template_id = 1; // Template UUID or unique name within tenant
+  string tag = 2; // e.g. "@production", "@staging", "@canary"
+  uint32 target_version = 3;
+  string updated_by = 4;
+  uint32 expected_version = 5; // Required optimistic lock precondition (0 if unassigned); returns ABORTED on mismatch
+  string tenant_id = 6; // Validated against caller JWT / x-tenant-id metadata
+}
+
+message PromoteTagResponse {
+  string template_id = 1;
+  string tag = 2;
+  uint32 target_version = 3;
+  bool broadcast_emitted = 4;
+}
+
+message ResolveTagRequest {
+  string template_id = 1; // Template UUID or unique name within tenant
+  string tag = 2;
+  string tenant_id = 3;
+}
+
+message ResolveTagResponse {
+  string template_id = 1;
+  string tag = 2;
+  uint32 version = 3;
+  TemplateAST ast = 4;
+  string schema_id = 5;
+}
+
+message GetTemplateVersionRequest {
+  string template_id = 1; // Template UUID or unique name within tenant
+  uint32 version = 2;
+  string tenant_id = 3;
+}
+
+message GetTemplateVersionResponse {
+  string template_id = 1;
+  uint32 version = 2;
+  TemplateAST ast = 3;
+  string schema_id = 4;
+  string author = 5;
+  string created_at = 6;
+}
+
+message RegisterSchemaRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string json_schema = 3;
+}
+
+message RegisterSchemaResponse {
+  string schema_id = 1;
+}
+
+message GetSchemaRequest {
+  string schema_id = 1;
+  string tenant_id = 2;
+}
+
+message GetSchemaResponse {
+  string schema_id = 1;
+  string name = 2;
+  string json_schema = 3;
+  string tenant_id = 4;
+  string created_at = 5;
+}
+
+message ListTemplatesRequest {
+  string tenant_id = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message TemplateSummary {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string description = 4;
+  uint32 current_version = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message ListTemplatesResponse {
+  repeated TemplateSummary templates = 1;
+  string next_cursor = 2;
+}
+
+message ListSchemasRequest {
+  string tenant_id = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message ListSchemasResponse {
+  repeated GetSchemaResponse schemas = 1;
+  string next_cursor = 2;
+}
+

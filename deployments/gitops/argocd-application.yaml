@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rag-prompt-registry-service
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rag-platform/rag-prompt-registry-service.git
+    targetRevision: main
+    path: deployments/helm/rag-prompt-registry
+    helm:
+      releaseName: rag-prompt-registry-service
+      valueFiles:
+        - values.yaml
+      parameters:
+        - name: secrets.existingSecret
+          value: rag-prompt-registry-service-secret
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rag-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+

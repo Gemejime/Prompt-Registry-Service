@@ -1,0 +1,139 @@
+{{- if .Values.canary.enabled }}
+{{- $replicas := int (.Values.canary.replicaCount | default .Values.replicaCount) }}
+{{- $firstWeight := int .Values.canary.steps.firstWeight }}
+{{- $secondWeight := int .Values.canary.steps.secondWeight }}
+{{- if not .Values.canary.trafficRouting }}
+{{- if or (lt (mul $replicas $firstWeight) 100) (ne (mod (mul $replicas $firstWeight) 100) 0) }}
+{{- fail (printf "canary replicaCount (%d) cannot accurately serve firstWeight (%d%%) without canary.trafficRouting; set canary.replicaCount so (replicaCount * firstWeight) is a positive multiple of 100" $replicas $firstWeight) }}
+{{- end }}
+{{- if or (lt (mul $replicas $secondWeight) 100) (ne (mod (mul $replicas $secondWeight) 100) 0) }}
+{{- fail (printf "canary replicaCount (%d) cannot accurately serve secondWeight (%d%%) without canary.trafficRouting; set canary.replicaCount so (replicaCount * secondWeight) is a positive multiple of 100" $replicas $secondWeight) }}
+{{- end }}
+{{- end }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "rag-prompt-registry.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rag-prompt-registry.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- $envSecret := "" }}
+        {{- if .Values.env }}
+        {{- $envSecret = get .Values.env "secretName" | default "" }}
+        {{- end }}
+        {{- if and (not .Values.secrets.existingSecret) (not $envSecret) }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity.mode "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "rag-prompt-registry.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "rag-prompt-registry.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+          {{- end }}
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: prompt-registry-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- $env := .Values.env | default dict }}
+          ports:
+            - name: http
+              containerPort: {{ default "8080" (get $env "HTTP_PORT") | int }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ default "9090" (get $env "GRPC_PORT") | int }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "rag-prompt-registry.fullname" . }}-config
+            - secretRef:
+                name: {{ include "rag-prompt-registry.secretName" . }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.ephemeralStorage.tmpSizeLimit }}
+  strategy:
+    canary:
+      {{- with .Values.canary.trafficRouting }}
+      trafficRouting:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      steps:
+        - setWeight: {{ .Values.canary.steps.firstWeight }}
+        - pause:
+            duration: {{ .Values.canary.steps.firstPauseDuration }}
+        - analysis:
+            templates:
+              - templateName: {{ include "rag-prompt-registry.fullname" . }}-canary-analysis
+            args:
+              - name: namespace
+                value: {{ .Release.Namespace | quote }}
+              - name: release
+                value: {{ .Release.Name | quote }}
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+        - setWeight: {{ .Values.canary.steps.secondWeight }}
+        - pause:
+            duration: {{ .Values.canary.steps.secondPauseDuration }}
+        - analysis:
+            templates:
+              - templateName: {{ include "rag-prompt-registry.fullname" . }}-canary-analysis
+            args:
+              - name: namespace
+                value: {{ .Release.Namespace | quote }}
+              - name: release
+                value: {{ .Release.Name | quote }}
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+{{- end }}
+

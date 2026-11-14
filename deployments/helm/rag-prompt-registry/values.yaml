@@ -1,0 +1,142 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/platform/rag-prompt-registry-service
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  httpPort: 8080
+  grpcPort: 9090
+
+# Control Plane Pod Sizing (Section 8 of RAG Prompt Registry Service Plan.pdf)
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+# Data Plane (rag-search-orchestrator + go-prompt-sdk) Sizing Reference
+dataPlaneReference:
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+    limits:
+      cpu: 4000m
+      memory: 2Gi
+
+probes:
+  liveness:
+    path: /healthz
+    port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Hardened Pod & Container Security Context (Layer 4 & Layer 5)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Ephemeral /tmp mount required when readOnlyRootFilesystem is true
+ephemeralStorage:
+  tmpSizeLimit: 16Mi
+
+# Pod Anti-Affinity: "soft" (default for single-node CI/dev) or "hard" (production multi-AZ)
+podAntiAffinity:
+  mode: soft
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Application 12-Factor Environment Configuration (ConfigMap - synced from .env.prod)
+env:
+  secretName: ""
+  HTTP_PORT: "8080"
+  GRPC_PORT: "9090"
+  OPENAPI_SPEC_PATH: "openapi/openapi.yaml"
+  CONN_EXEC_MODE: "simple_protocol"
+  ALLOW_IN_MEMORY_STORE: "false"
+  POSTGRES_MAX_CONNS: "25"
+  POSTGRES_MIN_CONNS: "2"
+  POSTGRES_AUTO_MIGRATE: "true"
+  REDIS_CLUSTER_ADDRS: "rag-prompt-registry-service-redis-0.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379,rag-prompt-registry-service-redis-1.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379,rag-prompt-registry-service-redis-2.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379"
+  REDIS_ADDRS: "rag-prompt-registry-service-redis-0.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379,rag-prompt-registry-service-redis-1.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379,rag-prompt-registry-service-redis-2.rag-prompt-registry-service-redis-headless.rag-platform.svc.cluster.local:6379"
+  REDIS_DB: "0"
+  REDIS_INVALIDATION_CHANNEL: "channel:prompt:invalidation"
+  JWT_ISSUER: "rag-prompt-registry-auth"
+  ADMIN_WRITE_RATE_LIMIT_RPS: "50"
+  ADMIN_WRITE_RATE_LIMIT_BURST: "100"
+  DEFAULT_TENANT_ID: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+  LOG_LEVEL: "INFO"
+
+# Credentials (Secret) - override existingSecret in production via Vault/ExternalSecrets
+secrets:
+  existingSecret: ""
+  postgresDSN: "postgres://postgres:changeme@pgbouncer:6432/prompt_registry?sslmode=require"
+  redisPassword: ""
+  jwtHmacSecret: ""
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  scrapeTimeout: 5s
+  path: /metrics
+  labels: {}
+
+# Data Plane (rag-search-orchestrator) PodMonitor for scraping go-prompt-sdk histograms
+sdkMonitor:
+  enabled: true
+  port: http
+  path: /metrics
+  interval: 15s
+  scrapeTimeout: 5s
+  labels: {}
+  selectorLabels:
+    app.kubernetes.io/name: rag-search-orchestrator
+
+prometheusRule:
+  enabled: true
+  labels: {}
+
+# Progressive Canary Rollout via Argo Rollouts
+canary:
+  enabled: false
+  # Replica count used when canary.enabled=true; 10 replicas allows exact 10%/50% replica-based weights
+  replicaCount: 10
+  # Optional Argo Rollouts trafficRouting block (e.g. istio, nginx, smi)
+  trafficRouting: {}
+  prometheusAddress: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  steps:
+    firstWeight: 10
+    firstPauseDuration: 2m
+    secondWeight: 50
+    secondPauseDuration: 5m
+

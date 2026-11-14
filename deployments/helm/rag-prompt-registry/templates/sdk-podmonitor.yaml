@@ -1,0 +1,21 @@
+{{- if .Values.sdkMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "rag-prompt-registry.fullname" . }}-sdk
+  labels:
+    {{- include "rag-prompt-registry.labels" . | nindent 4 }}
+    {{- with .Values.sdkMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- toYaml .Values.sdkMonitor.selectorLabels | nindent 6 }}
+  podMetricsEndpoints:
+    - port: {{ .Values.sdkMonitor.port }}
+      path: {{ .Values.sdkMonitor.path }}
+      interval: {{ .Values.sdkMonitor.interval }}
+      scrapeTimeout: {{ .Values.sdkMonitor.scrapeTimeout }}
+{{- end }}
+

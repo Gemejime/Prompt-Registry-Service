@@ -1,0 +1,54 @@
+# Tasks & Reference Blueprints (Strictly Ignored)
+tasks/
+tasks
+
+# Binaries and build artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.txt
+coverage.out
+coverage.html
+
+# Go workspace and cache
+go.work
+go.work.sum
+.cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Temporary files & logs
+tmp/
+__pycache__/
+*.pyc
+*.log
+

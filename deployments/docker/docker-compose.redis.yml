@@ -1,0 +1,25 @@
+services:
+  redis:
+    image: bitnami/redis:7.2-debian-12
+    container_name: rag-prompt-registry-redis-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      ALLOW_EMPTY_PASSWORD: "no"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-localdevpassword}"
+      REDIS_AOF_ENABLED: "yes"
+      REDIS_DISABLE_COMMANDS: "FLUSHDB,FLUSHALL"
+    volumes:
+      - redis_data:/bitnami/redis/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  redis_data:
+    driver: local
+

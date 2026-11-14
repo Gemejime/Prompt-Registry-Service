@@ -1,0 +1,77 @@
+# Bitnami Redis 7.2+ Cluster Helm Configuration for rag-prompt-registry-service
+# Chart: bitnami/redis-cluster (v11.x)
+# Release: rag-prompt-registry-service-redis
+# Namespace: rag-platform
+
+fullnameOverride: "rag-prompt-registry-service-redis"
+
+image:
+  registry: docker.io
+  repository: bitnami/redis-cluster
+  tag: "7.2.5-debian-12-r0"
+  pullPolicy: IfNotPresent
+
+usePassword: true
+existingSecret: "rag-prompt-registry-service-secret"
+existingSecretPasswordKey: "REDIS_PASSWORD"
+
+cluster:
+  init: true
+  nodes: 6
+  replicas: 1
+
+redis:
+  podAntiAffinityPreset: soft
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  configmap: |-
+    appendonly yes
+    appendfsync everysec
+    save 900 1
+    save 300 10
+    save 60 10000
+    maxmemory-policy allkeys-lru
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 5
+
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+
+metrics:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: bitnami/redis-exporter
+    tag: "1.62.0-debian-12-r0"
+  service:
+    type: ClusterIP
+    port: 9121
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9121"
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
