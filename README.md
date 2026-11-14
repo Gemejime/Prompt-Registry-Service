@@ -1,6 +1,6 @@
 # RAG Prompt Registry Service
 
-[![Go Version](https://img.shields.io/badge/go-1.26.10%2B-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/go-1.26.11%2B-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-decoupled%20control%2Fdata%20plane-orange.svg)](#architecture-overview)
 
@@ -71,7 +71,7 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
 
 ### 1. Prerequisites
 
-- **Go**: 1.26.10+ (64-bit)
+- **Go**: 1.26.11+ (64-bit)
 - **PostgreSQL**: 16+ (or PgBouncer 1.21+ in transaction pooling mode)
 - **Redis**: 7.2+ (Cluster or Standalone)
 - **Python**: 3.10+ (for configuration sync validation scripts)
